@@ -1,0 +1,29 @@
+{
+  "default": "neuralwatt/qwen3.6-35b",
+  "providers": {
+    "neuralwatt": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.neuralwatt.com/v1",
+      "apiKey": "!kwallet-query -f Passwords -r neuralwatt-api-key kdewallet",
+      "models": [
+        {
+          "id": "qwen3.6-35b",
+          "name": "Qwen3.6-35B-A3B (Neuralwatt, BF16, 131K)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 131056,
+          "maxTokens": 32768,
+          "compat": { "supportsDeveloperRole": false },
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": "high",
+            "low": "high",
+            "medium": "high",
+            "high": "high"
+          },
+          "cost": { "input": 0.29, "output": 1.15, "cacheRead": 0.029, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
