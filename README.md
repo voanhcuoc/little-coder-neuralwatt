@@ -9,7 +9,8 @@ machine can't run.
 
 ```
 models.json   # copy to ~/.config/little-coder/models.json
-README.md     # this file
+README.md     # this file (setup & configuration reference)
+AGENTS.md     # agent behavioral notes (permission gate, cancellation, quirks)
 ```
 
 ## What it does
@@ -41,8 +42,8 @@ API Keys.
 ### 3. KDE KWallet (KDE Wallet / `kwalletd6`)
 
 The `apiKey` field uses pi's `!command` resolver (see
-[resolution chain](#api-key-resolution-chain) below). The key is fetched at
-call time from KWallet — never stored in `models.json`.
+[API key resolution chain](#api-key-resolution-chain) below). The key is fetched
+at call time from KWallet — never stored in `models.json`.
 
 Store the key:
 
@@ -123,7 +124,7 @@ everything else to `high`.
 | `low` | `reasoning_effort: "high"` | Same alias |
 | `medium` | `reasoning_effort: "high"` | Same alias |
 | `high` | `reasoning_effort: "high"` | Passthrough |
-| `xhigh` | absent | `getSupportedThinkingLevels` hides levels not in the map (line 399: `return mapped !== undefined`); model has no distinct xhigh |
+| `xhigh` | absent | `getSupportedThinkingLevels` hides levels not in the map; model has no distinct xhigh |
 | `max` | absent | Same — no distinct max level |
 
 ### `compat`
@@ -171,6 +172,31 @@ evaluated and rejected:
    data is surfaced separately via `/neuralwatt:energy` slash command and
    status-bar widget, not in the model registration.
 
+## Permission mode
+
+The default permission mode is `auto` — a shell command whitelist that blocks
+anything not in `BUILTIN_SAFE_PREFIXES`. To change it, set
+`LITTLE_CODER_PERMISSION_MODE`:
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Whitelist: safe commands pass, everything else blocked |
+| `manual` | Every shell command prompts before execution (no whitelist) |
+| `accept-all` | No gate — all commands pass silently |
+
+To persist in fish:
+```fish
+set -Ux LITTLE_CODER_PERMISSION_MODE manual
+```
+
+To add specific commands to the `auto` whitelist without switching modes:
+```fish
+set -Ux LITTLE_CODER_BASH_ALLOW "rm,make,cargo,docker"
+```
+
+See `AGENTS.md` for the full permission gate reference and the cancel/abort
+behavior documentation.
+
 ## Adapting to a different secret store
 
 The `apiKey` `!command` form runs any shell command. Replace the
@@ -193,29 +219,8 @@ The `apiKey` `!command` form runs any shell command. Replace the
 4. If not using KWallet, replace the `apiKey` value
 5. If using a different wallet name/folder/entry, update the `kwallet-query`
    arguments: `kwallet-query -f <folder> -r <entry> <wallet>`
-6. Verify with `little-coder --list-models`
-
-## Permission mode
-
-The default permission mode is `auto` — a shell command whitelist that blocks
-anything not in `BUILTIN_SAFE_PREFIXES`. To change it, set
-`LITTLE_CODER_PERMISSION_MODE`:
-
-| Mode | Behavior |
-|---|---|
-| `auto` (default) | Whitelist: safe commands pass, everything else blocked |
-| `manual` | Every shell command prompts before execution (no whitelist) |
-| `accept-all` | No gate — all commands pass silently |
-
-To persist in fish:
-```fish
-set -Ux LITTLE_CODER_PERMISSION_MODE manual
-```
-
-To add specific commands to the `auto` whitelist without switching modes:
-```fish
-set -Ux LITTLE_CODER_BASH_ALLOW "rm,make,cargo,docker"
-```
+6. Set `LITTLE_CODER_PERMISSION_MODE` (see [Permission mode](#permission-mode))
+7. Verify with `little-coder --list-models`
 
 ## Notes
 
