@@ -195,6 +195,28 @@ The `apiKey` `!command` form runs any shell command. Replace the
    arguments: `kwallet-query -f <folder> -r <entry> <wallet>`
 6. Verify with `little-coder --list-models`
 
+## Permission mode
+
+The default permission mode is `auto` — a shell command whitelist that blocks
+anything not in `BUILTIN_SAFE_PREFIXES`. To change it, set
+`LITTLE_CODER_PERMISSION_MODE`:
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Whitelist: safe commands pass, everything else blocked |
+| `manual` | Every shell command prompts before execution (no whitelist) |
+| `accept-all` | No gate — all commands pass silently |
+
+To persist in fish:
+```fish
+set -Ux LITTLE_CODER_PERMISSION_MODE manual
+```
+
+To add specific commands to the `auto` whitelist without switching modes:
+```fish
+set -Ux LITTLE_CODER_BASH_ALLOW "rm,make,cargo,docker"
+```
+
 ## Notes
 
 - This override only declares the `neuralwatt` provider; shipped providers
