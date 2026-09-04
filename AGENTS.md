@@ -170,6 +170,37 @@ evaluated and rejected:
    "energy pricing instead of token pricing" doesn't actually replace the token
    cost field.
 
+## Permission toggle extension
+
+User extension at `extensions/permission-toggle/index.ts`. Installs to
+`~/.config/little-coder/extensions/permission-toggle/index.ts`.
+
+Registers the `/permission` slash command to switch permission modes at runtime
+without restarting the session. Works because `permission-gate` reads
+`process.env.LITTLE_CODER_PERMISSION_MODE` inside the `tool_call` event handler
+(per-call, not cached at startup), so updating the env var takes effect on the
+next tool invocation.
+
+### Usage
+
+```
+/permission              # show current mode
+/permission manual        # every shell command prompts before execution
+/permission auto          # whitelist: safe commands pass, rest blocked
+/permission accept-all    # no gate, all commands pass silently
+```
+
+### Implementation
+
+The handler sets `process.env.LITTLE_CODER_PERMISSION_MODE` directly. For
+`auto` mode (the shipped default), the env var is deleted (so
+`getPermissionMode()` returns `"auto"` as fallback).
+
+### Verification
+
+Tested via PTY: `/permission` shows current mode; `/permission accept-all`
+switches and confirms; the next tool call respects the new mode immediately.
+
 ## Permission gate
 
 Source: `.pi/extensions/permission-gate/index.ts` +
