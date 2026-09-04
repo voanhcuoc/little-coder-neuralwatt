@@ -18,6 +18,8 @@ mkdir -p ~/.config/little-coder
 cp models.json ~/.config/little-coder/models.json
 mkdir -p ~/.config/little-coder/extensions/permission-toggle
 cp extensions/permission-toggle/index.ts ~/.config/little-coder/extensions/permission-toggle/index.ts
+mkdir -p ~/.config/little-coder/extensions/image-pruner
+cp extensions/image-pruner/index.ts ~/.config/little-coder/extensions/image-pruner/index.ts
 
 # 4. Set permission mode to manual (optional but recommended)
 #    For fish:
@@ -33,6 +35,7 @@ little-coder --no-tools --model neuralwatt/qwen3.6-35b -p "What is 2+2? Reply wi
 ```
 models.json                          →  copy to ~/.config/little-coder/models.json
 extensions/permission-toggle/index.ts →  copy to ~/.config/little-coder/extensions/permission-toggle/index.ts
+extensions/image-pruner/index.ts     →  copy to ~/.config/little-coder/extensions/image-pruner/index.ts
 README.md                            →  this file
 AGENTS.md                            →  full technical reference for AI agents setting up this config
 ```
@@ -45,6 +48,7 @@ AGENTS.md                            →  full technical reference for AI agents
 - Reasoning effort correctly mapped (off → none; everything else → high)
 - Permission mode set to `manual` (every shell command prompts before running)
 - `/permission` slash command to switch modes at runtime (manual ↔ auto ↔ accept-all)
+- Image pruning: automatically strips excess images (beyond 4) from context before each API request
 
 ## Notes
 

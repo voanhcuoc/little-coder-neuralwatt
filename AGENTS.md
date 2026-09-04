@@ -170,6 +170,78 @@ evaluated and rejected:
    "energy pricing instead of token pricing" doesn't actually replace the token
    cost field.
 
+## Image pruner extension
+
+User extension at `extensions/image-pruner/index.ts`. Installs to
+`~/.config/little-coder/extensions/image-pruner/index.ts`.
+
+### Problem
+
+Neuralwatt's `qwen3.6-35b` reports `max_images: 4` in its API metadata, but pi
+doesn't read or enforce this limit. When the agent reads 5+ images (via the
+`read` tool on image files, or user-pasted images), the API returns a 400 error
+and the agent loop crashes. Compaction doesn't help because:
+
+1. Compaction summarizes older messages into text, but keeps recent messages
+   intact (with their image blocks) in the "kept" portion
+2. If all 5 images are in the kept portion, the compacted context still has 5
+   images — the next request fails identically
+3. The 400 "too many images" error doesn't match any `OVERFLOW_PATTERNS` in
+   `overflow.js`, so it's not detected as overflow — no compaction-retry is
+   triggered
+
+### Solution
+
+Hooks the `context` event, which fires before every provider request via
+`runner.emitContext(messages)` (source: `runner.js` L748). The handler:
+
+1. Counts all `type: "image"` content blocks across all messages
+2. If total > `maxImages` (default 4, from Qwen3.6-35B's API `max_images`)
+3. Prunes the oldest images (replaces with `[image pruned: exceeded
+   per-request image limit]` text placeholder)
+4. Returns `{ messages: pruned }` — pi uses the modified messages for the
+   request
+
+The pruning keeps the **newest** `maxImages` images and prunes the oldest ones,
+since recent images are more likely to be contextually relevant.
+
+### Configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `LITTLE_CODER_MAX_IMAGES` | `4` | Max images per request. Set to `0` to disable. |
+
+### How the `context` event works (source: `runner.js` L748-770)
+
+```js
+async emitContext(messages) {
+    let currentMessages = structuredClone(messages);
+    for (const ext of this.extensions) {
+        const handlers = ext.handlers.get("context");
+        for (const handler of handlers) {
+            const event = { type: "context", messages: currentMessages };
+            const handlerResult = await handler(event, ctx);
+            if (handlerResult && handlerResult.messages) {
+                currentMessages = handlerResult.messages;  // ← our pruned messages
+            }
+        }
+    }
+    return currentMessages;
+}
+```
+
+Messages are deep-cloned before passing to extensions, so modifications are
+safe. The SDK calls `emitContext` before each provider request (source:
+`sdk.js` L222-223).
+
+### Why pi doesn't enforce `max_images` automatically
+
+The `downgradeUnsupportedImages` function in `transform-messages.js` only
+handles the binary case (model supports images vs doesn't). It replaces ALL
+image blocks with placeholders when the model doesn't support images. There's
+no per-request count limit — a model that supports images but has a cap (like
+Qwen3.6-35B's 4-image limit) gets no protection.
+
 ## Permission toggle extension
 
 User extension at `extensions/permission-toggle/index.ts`. Installs to
