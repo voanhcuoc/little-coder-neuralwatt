@@ -51,27 +51,38 @@ export default function (pi: ExtensionAPI) {
   pi.registerEntryRenderer(CUSTOM_TYPE, holdRenderer);
 
   let requestStartNs: bigint | null = null;
-  let holdSecPending: number | null = null;
 
+  /**
+   * Measure hold (queue) time from request send to first token arrival.
+   *
+   * We measure delta to MESSAGE_START (not after_provider_response).
+   * after_provider_response fires when the ENTIRE streaming response
+   * completes — so that measurement includes the full generation time
+   * on top of the queue hold, making numbers look inflated.
+   *
+   * message_start fires on the first token/content chunk = actual
+   * time user waited before seeing anything (TTFT = hold time).
+   */
   pi.on("before_provider_request", async (event) => {
-    (event as any).payload = injectServiceTier((event as any).payload, getTier());
-    requestStartNs = getTier() === "flex" ? BigInt(process.hrtime.bigint()) : null;
-  });
-
-  pi.on("after_provider_response", async () => {
-    if (requestStartNs === null) return;
-    const startNs = requestStartNs;
-    requestStartNs = null;
-    const nowNs = process.hrtime.bigint();
-    const holdS = Number(nowNs - startNs) / 1_000_000_000;
-    if (holdS >= 0.2) holdSecPending = holdS;
+    (event as any).payload = injectServiceTier(
+      (event as any).payload,
+      getTier(),
+    );
+    requestStartNs = getTier() === "flex"
+      ? BigInt(process.hrtime.bigint())
+      : null;
   });
 
   pi.on("message_start", ({ message }) => {
-    if (message.role !== "assistant" || !holdSecPending) return;
-    const sec = holdSecPending;
-    holdSecPending = null;
-    pi.appendEntry(CUSTOM_TYPE, { holdSec: sec });
+    if (message.role !== "assistant" || !requestStartNs) return;
+    // Clear immediately so subsequent message_start events
+    // (e.g. after tool calls) don't emit annotations.
+    const startNs = requestStartNs;
+    requestStartNs = null;
+    const nowNs = BigInt(process.hrtime.bigint());
+    const holdS = Number(nowNs - startNs) / 1e9;
+    if (holdS < 0.2) return; // noise threshold
+    pi.appendEntry(CUSTOM_TYPE, { holdSec: holdS });
   });
 
   pi.registerCommand("tier", {
