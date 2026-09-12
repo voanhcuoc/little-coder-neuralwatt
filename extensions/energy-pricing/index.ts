@@ -1,9 +1,16 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { Box as BoxClass, Text as TextClass } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 // ============================================================================
-// Energy pricing — display Neuralwatt per-request energy + cost in footer
+// Energy pricing — display Neuralwatt per-request energy + cost in scroll area
+// as a CustomEntry annotation (zero context pollution).
+//
+// Injected at `message_end` via `pi.appendEntry("nw-energy", data)`.
+// The renderer produces a dim, inline ribbon before the assistant's response.
+//
+
 //
 // Neuralwatt sends energy & cost data via SSE comments in every stream:
 //   : energy {"energy_joules": ..., "energy_kwh": ...}
@@ -203,6 +210,11 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(5)}`;
 }
 
+/** Cost ribbon rendered in the scroll area. */
+interface CostRibbonData {
+  text: string;
+}
+
 function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
   if (vnd < 1) return `₫${(vnd * 1_000).toFixed(0)}`;
@@ -270,6 +282,15 @@ function parseSseComment(line: string): void {
 let fetchWrapped = false;
 
 export default function (pi: ExtensionAPI) {
+  // Register custom scroll entry renderer for energy ribbon
+  pi.registerEntryRenderer<CostRibbonData>("nw-energy", (entry, _opts, theme) => {
+    const text = entry.data?.text;
+    if (!text) return undefined;
+    const box = new BoxClass(2, 1);
+    box.addChild(new TextClass(theme.fg("dim", `⚡ ${text}`), 1, 0));
+    return box;
+  });
+
   // Wrap fetch ONCE (per process)
   if (!fetchWrapped) {
     fetchWrapped = true;
@@ -308,15 +329,11 @@ export default function (pi: ExtensionAPI) {
     if (r) vndRate = r;
   });
 
-  pi.on("message_end", (_event, ctx) => {
+  pi.on("message_end", (_event) => {
     if (!lastEnergy || lastEnergy.joules <= 0) return;
 
-    // Refresh VND in background — never block UI rendering.
-    // On long-running / very stale sessions this won't update
-    // until the next response, but the UI responds immediately.
-    void getVND().then((r) => {
-      if (r) vndRate = r;
-    });
+    // Refresh VND in background (per-call, guarded by disk cache).
+    void getVND();
 
     const parts: string[] = [];
     parts.push(`⚡ ${formatEnergyWh(lastEnergy.joules)}`);
@@ -327,6 +344,9 @@ export default function (pi: ExtensionAPI) {
       parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
     }
 
-    ctx.ui.setStatus("nw-energy", parts.join(" "));
+    const ribbonText = parts.join(" ");
+
+    // Inject cost ribbon into scroll as CustomEntry (zero LLM context pollution)
+    pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
   });
 }
