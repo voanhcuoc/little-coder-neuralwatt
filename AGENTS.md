@@ -337,6 +337,53 @@ Tested via PTY: `/tier flex` switches and confirms; the next request to
 Neuralwatt includes `"service_tier": "flex"` in the request body; `/tier
 standard` switches back and requests use standard pricing again.
 
+## TTFT extension
+
+The project requires the user-level extension
+`@kinarajv/pi-tps-extensions` for TTFT (Time To First Token) display. It is
+not in the repo — it is installed user-local and symlinked into the extension
+dir.
+
+### Installation
+
+```bash
+# 1. Install the npm package
+npm install -g @kinarajv/pi-tps-extensions   # or into ~/.config/little-coder/
+
+# 2. Copy the extension index into the extensions directory
+mkdir -p ~/.config/little-coder/extensions/pi-tps-extensions
+cp ~/.config/little-coder/node_modules/@kinarajv/pi-tps-extensions/extensions/tokens-per-second.ts \
+   ~/.config/little-coder/extensions/pi-tps-extensions/index.ts
+```
+
+(If installed globally: adjust the first path to the global `node_modules`.)
+
+### What it provides
+
+Shows real-time token throughput and TTFT in the status bar during LLM
+calls:
+
+| Phase | Status bar display |
+|---|---|
+| Waiting (no data) | `⏳ waiting...` |
+| Waiting (has prior TTFT) | `⏳ waiting·last 1.2s...` |
+| Streaming | `⚡ 142 tok/s · 🕐 1.2s ↑12k ↓8k` |
+| Finished | `⚡ 156 tok/s 🕐1.2s ↓823 (5.2s)` |
+| Idle (avg) | `⏺ avg 156 tok/s · 🕐 1.3s ↑2.3k ↓8.8k` |
+
+Compact mode (`/tps compact`) shows `142t/s, 1.2s`.
+
+### Why this package (not custom)
+
+After auditing Neuralwatt's per-request usage API and sessions API
+(`/v1/usage/requests`, `/v1/usage/sessions`), neither endpoint exposes a
+dedicated queue hold, flex delay, or admission delay field. The only timing
+data available is `ttft` (seconds) and `duration` (seconds). Attempting to
+derive queue hold time from these proved unreliable, so the custom hold-time
+measurement was removed and the external `@kinarajv/pi-tps-extensions`
+package is used instead — it already implements reliable TTFT tracking via
+the same PI event hooks.
+
 ## Permission gate
 
 Source: `.pi/extensions/permission-gate/index.ts` +
