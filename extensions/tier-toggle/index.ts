@@ -1,6 +1,5 @@
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import { Box, Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TextContent } from "@earendil-works/pi-ai";
 
 // Adds /tier slash command to switch between "standard" and "flex" service tier
 // at runtime without restarting. Tier is per-session (process-level): each
@@ -40,36 +39,21 @@ function injectServiceTier(payload: unknown, tier: Tier): unknown {
   return payload;
 }
 
-/**
- * Convert seconds to a human-readable hold duration.
- * e.g. 0.5 → "500ms", 3.2 → "3.2s", 65 → "1m 5s"
+/**  
+ * Convert seconds to a short, rounded hold duration.
+ * e.g. 0.5 → "500ms", 3.137 → "3.1s", 65 → "1m 5s"
  */
 function formatHold(sec: number): string {
   if (sec < 1) return `${Math.round(sec * 1000)}ms`;
-  if (sec < 60) return `${sec}s`;
+  if (sec < 30) return `${sec.toFixed(1)}s`.replace(/\.0$/, "s");
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
   return `${m}m ${s}s`;
 }
 
-/**
- * Build the widget component that renders flex-tier hold-time info.
- * Displayed in the TUI sidebar via setWidget — visible during scrolling
- * but never injected into LLM context.
- */
-function buildHoldComponent(
-  holdSec: number,
-  theme: Theme,
-): Component {
-  const box = new Box(2, 1);
-  box.addChild(
-    new Text(theme.fg("dim", `(held ${formatHold(holdSec)})`), 1, 0),
-  );
-  return box;
-}
-
 export default function (pi: ExtensionAPI) {
   let requestStartNs: bigint | null = null;
+  let lastHoldSec: number | null = null;
 
   pi.registerCommand("tier", {
     description:
@@ -99,21 +83,15 @@ export default function (pi: ExtensionAPI) {
   /**
    * Record request start time when flex tier is active.
    *
-   * Neuralwatt flex tier holds the HTTP connection open with keepalive frames
-   * until capacity opens up, then starts the stream. There is NO server-side
-   * hold-time or queue-time field in the response, headers, or SSE stream
-   * (confirmed by reading the OpenAPI spec, streaming guide, and flex tier
-   * docs — portal.neuralwatt.com/docs/guides/flex-tier).
+   * Measurement: wall-clock delta between before_provider_request and
+   * after_provider_response. On message_start for assistant responses,
+   * we prepend a TextContent block to the streaming message content so
+   * the hold annotation renders at the START of the model's response
+   * in the scrollable transcript area.
    *
-   * The gateway tracks `ttft` (time-to-first-token) server-side — visible in
-   * the /v1/usage/requests per-request API — but it is NOT echoed in the
-   * inference response. We measure it live: the delta from `before_provider`
-   * request to `after_provider_response` is the client-side hold duration.
-   *
-   * The hold annotation is displayed via ctx.ui.setWidget(), which renders
-   * a widget in the TUI sidebar. This is visible during the scrolling
-   * transcript but is NEVER injected into buildSessionContext() → zero
-   * context pollution.
+   * Note: the annotation IS included in the assistant message content
+   * that gets persisted to the session file, so it will appear in future
+   * context. It's a short `(held X.Xs)` line — negligible context impact.
    */
   pi.on("before_provider_request", async (event) => {
     (event as any).payload = injectServiceTier(
@@ -128,7 +106,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("after_provider_response", async (_, ctx) => {
+  pi.on("after_provider_response", async () => {
     if (requestStartNs === null) return;
     const startNs = requestStartNs;
     requestStartNs = null; // consumed
@@ -138,18 +116,19 @@ export default function (pi: ExtensionAPI) {
     const holdS = Number(nowNs - startNs) / 1_000_000_000;
 
     if (holdS < 0.2) return; // noise threshold
-
-    // setWidget: visible in TUI sidebar, zero LLM context pollution.
-    // The widget auto-clears when a new request starts, but we also
-    // explicitly clear after the agent turn ends.
-    const content: ((tui: TUI, theme: Theme) => Component) = (_, theme) =>
-      buildHoldComponent(holdS, theme);
-    ctx.ui.setWidget("nw-flex-hold", content, {
-      placement: "belowEditor",
-    });
+    lastHoldSec = holdS;
   });
 
-  pi.on("agent_end", async (_, ctx) => {
-    ctx.ui.setWidget("nw-flex-hold", undefined);
+  pi.on("message_start", async ({ message }) => {
+    if (!lastHoldSec) return;
+    if (message.role !== "assistant") return;
+    if (!(message as any).content || !(message as any).content.length) return;
+
+    const holdAnn: TextContent = {
+      type: "text",
+      text: `(held ${formatHold(lastHoldSec)}) `,
+    };
+    (message as any).content.unshift(holdAnn);
+    lastHoldSec = null;
   });
 }
