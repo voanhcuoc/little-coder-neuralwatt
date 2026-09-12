@@ -22,6 +22,25 @@
             "high": "high"
           },
           "cost": { "input": 0.29, "output": 1.15, "cacheRead": 0.029, "cacheWrite": 0 }
+        },
+        {
+          "id": "qwen-3.8-27b",
+          "name": "Qwen3.8-27B (Neuralwatt, FP8, 262K)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262128,
+          "maxTokens": 131072,
+          "compat": { "supportsDeveloperRole": false },
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "xhigh",
+            "xhigh": "xhigh",
+            "max": "xhigh"
+          },
+          "cost": { "input": 0.45, "output": 3.2, "cacheRead": 0.25, "cacheWrite": 0 }
         }
       ]
     }
