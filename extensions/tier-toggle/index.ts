@@ -1,5 +1,5 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Box, Text } from "@earendil-works/pi-tui";
 
 // Adds /tier slash command to switch between "standard" and "flex" service tier
@@ -53,34 +53,22 @@ function formatHold(sec: number): string {
 }
 
 /**
- * Build a dim annotation component to render hold-time info in the scrollable
- * transcript as a CustomEntry — visible in TUI but never injected into LLM
- * context.
+ * Build the widget component that renders flex-tier hold-time info.
+ * Displayed in the TUI sidebar via setWidget — visible during scrolling
+ * but never injected into LLM context.
  */
-function holdAnnotationComponent(
+function buildHoldComponent(
   holdSec: number,
   theme: Theme,
 ): Component {
-  const box = new Box(0, 0);
+  const box = new Box(2, 1);
   box.addChild(
-    new Text(theme.fg("dim", `(held ${formatHold(holdSec)})`), 0, 0),
+    new Text(theme.fg("dim", `(held ${formatHold(holdSec)})`), 1, 0),
   );
   return box;
 }
 
 export default function (pi: ExtensionAPI) {
-  const entryCustomType = "nw-flex-hold";
-
-  // Register a custom renderer that displays hold-time annotations in the
-  // scrollable message area without ever touching LLM context.
-  pi.registerEntryRenderer(entryCustomType, (entry, _options, theme) => {
-    const data = entry.data as { holdSec: number } | undefined;
-    if (!data || data.holdSec < 0.2) return undefined;
-    return holdAnnotationComponent(data.holdSec, theme);
-  });
-
-  // Per-request timing. Events fire sequentially:
-  //   before_provider_request → after_provider_response → message_start → message_end
   let requestStartNs: bigint | null = null;
 
   pi.registerCommand("tier", {
@@ -108,22 +96,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- Per-request hooks: measure hold time, inject annotation into scroll ---
-
-  /** Record request start time when flex tier is active. */
-  pi.on("before_provider_request", async (event) => {
-    const payload = (event as any).payload;
-    const tier = getTier();
-    if (tier === "flex") {
-      requestStartNs = BigInt(process.hrtime.bigint());
-    } else {
-      requestStartNs = null;
-    }
-    return injectServiceTier(payload, tier);
-  });
-
   /**
-   * Compute hold time from wall-clock delta and annotate the scroll.
+   * Record request start time when flex tier is active.
    *
    * Neuralwatt flex tier holds the HTTP connection open with keepalive frames
    * until capacity opens up, then starts the stream. There is NO server-side
@@ -136,10 +110,24 @@ export default function (pi: ExtensionAPI) {
    * inference response. We measure it live: the delta from `before_provider`
    * request to `after_provider_response` is the client-side hold duration.
    *
-   * The hold annotation is appended as a CustomEntry registered via
-   * `registerEntryRenderer`, so it renders in the TUI scrollable area but
-   * is never injected into buildSessionContext() → never touches LLM context.
+   * The hold annotation is displayed via ctx.ui.setWidget(), which renders
+   * a widget in the TUI sidebar. This is visible during the scrolling
+   * transcript but is NEVER injected into buildSessionContext() → zero
+   * context pollution.
    */
+  pi.on("before_provider_request", async (event) => {
+    (event as any).payload = injectServiceTier(
+      (event as any).payload,
+      getTier(),
+    );
+    const tier = getTier();
+    if (tier === "flex") {
+      requestStartNs = BigInt(process.hrtime.bigint());
+    } else {
+      requestStartNs = null;
+    }
+  });
+
   pi.on("after_provider_response", async (_, ctx) => {
     if (requestStartNs === null) return;
     requestStartNs = null; // consumed
@@ -148,9 +136,17 @@ export default function (pi: ExtensionAPI) {
       (Date.now() - Number(requestStartNs) / 1_000_000) / 1000;
     if (holdS < 0.2) return; // noise threshold
 
-    // CustomEntry: visible in TUI scroll, NOT in LLM conversation context.
-    // ctx.appendEntry is not available on event-handler context (createContext()
-    // exposes sessionManager but not the runtime action directly).
-    ctx.sessionManager.appendCustomEntry(entryCustomType, { holdSec: holdS });
+    // setWidget: visible in TUI sidebar, zero LLM context pollution.
+    // The widget auto-clears when a new request starts, but we also
+    // explicitly clear after the agent turn ends.
+    const content: ((tui: TUI, theme: Theme) => Component) = (_, theme) =>
+      buildHoldComponent(holdS, theme);
+    ctx.ui.setWidget("nw-flex-hold", content, {
+      placement: "belowEditor",
+    });
+  });
+
+  pi.on("agent_end", async (_, ctx) => {
+    ctx.ui.setWidget("nw-flex-hold", undefined);
   });
 }
