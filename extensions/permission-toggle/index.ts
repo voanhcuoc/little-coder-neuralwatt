@@ -39,6 +39,12 @@ function currentMode(): Mode {
 }
 
 export default function (pi: ExtensionAPI) {
+  /** Refresh combined status on session start so initial values show. */
+  pi.on("session_start", async (_event, ctx) => {
+    const s = buildStatus();
+    if (s) ctx.ui.setStatus(STATUS_KEY, s);
+  });
+
   pi.registerCommand("permission", {
     description: "Switch permission mode: manual (prompt), auto (whitelist), accept-all (no gate)",
     argumentHint: "manual|auto|accept-all",
