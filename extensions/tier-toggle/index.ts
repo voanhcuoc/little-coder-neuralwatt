@@ -27,6 +27,11 @@ function buildFullStatus(): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  /** Set footer status on session start so initial values show immediately. */
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.setStatus("nw-status", buildFullStatus());
+  });
+
   /** Inject service_tier into the request body — Neuralwatt only. */
   pi.on("before_provider_request", async (event, ctx) => {
     const p = (event as any).payload;
