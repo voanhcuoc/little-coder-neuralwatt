@@ -9,29 +9,34 @@ function getTier(): Tier {
   return "standard";
 }
 
-export default function (pi: ExtensionAPI) {
-  console.warn("[tier-toggle] loaded");
+/** Permission mode from the permission-toggle extension. */
+function getPermissionMode(): string | undefined {
+  const v = process.env.LITTLE_CODER_PERMISSION_MODE;
+  return v;
+}
 
+/** Combined status string, e.g. `"flex · auto"` or `"auto"` etc. */
+function buildFullStatus(): string {
+  const tier = getTier();
+  const perm = getPermissionMode();
+  const parts: string[] = [];
+  if (tier === "flex") parts.push("flex");
+  if (perm && perm !== "auto") parts.push(perm);
+  if (parts.length > 0) return parts.join(" · ");
+  return "";
+}
+
+export default function (pi: ExtensionAPI) {
   /** Inject service_tier into the request body — Neuralwatt only. */
   pi.on("before_provider_request", async (event, ctx) => {
     const p = (event as any).payload;
     if (p && typeof p === "object") {
-      if ((p as any).provider !== "neuralwatt") {
-        console.warn("[tier-toggle] skipping non-neuralwatt:", (p as any).provider);
-        return;
-      }
+      if ((p as any).provider !== "neuralwatt") return;
       if (getTier() === "flex" && !(p as any).service_tier) {
         (p as any).service_tier = "flex";
       }
     }
-    // Update footer status bar — flex shows "flex", standard is hidden
-    const tier = getTier();
-    console.warn("[tier-toggle] setting status:", tier);
-    if (tier === "flex") {
-      ctx.ui.setStatus("nw-tier", "flex");
-    } else {
-      ctx.ui.setStatus("nw-tier", undefined);
-    }
+    ctx.ui.setStatus("nw-status", buildFullStatus());
   });
 
   pi.registerCommand("tier", {
@@ -49,12 +54,7 @@ export default function (pi: ExtensionAPI) {
       }
       process.env.LITTLE_CODER_SERVICE_TIER = requested as Tier;
       ctx.ui.notify(`Service tier: ${requested}`, "info");
-
-      if (requested === "flex") {
-        ctx.ui.setStatus("nw-tier", "flex");
-      } else {
-        ctx.ui.setStatus("nw-tier", undefined);
-      }
+      ctx.ui.setStatus("nw-status", buildFullStatus());
     },
   });
 }
