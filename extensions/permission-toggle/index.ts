@@ -1,5 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+/** Shared status key with tier-toggle. */
+const STATUS_KEY = "nw-status";
+
+/** Build a status string like `flex · accept-all` from shared env vars. */
+function buildStatus(): string {
+  const tier = process.env.LITTLE_CODER_SERVICE_TIER;
+  const perm = process.env.LITTLE_CODER_PERMISSION_MODE;
+  const parts: string[] = [];
+  if (tier === "flex") parts.push("flex");
+  if (perm && perm !== "auto") parts.push(perm);
+  return parts.join(" · ");
+}
+
 // Adds /permission slash command to switch between permission modes at runtime
 // without restarting. Works because permission-gate reads
 // process.env.LITTLE_CODER_PERMISSION_MODE per-tool-call (not cached at startup),
@@ -53,6 +66,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       ctx.ui.notify(`Permission mode: ${mode}`, "info");
+      const status = buildStatus();
+      if (status) ctx.ui.setStatus(STATUS_KEY, status);
     },
   });
 }
