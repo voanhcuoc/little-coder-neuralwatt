@@ -18,10 +18,9 @@ let currentModel: string | undefined;
  */
 function getMaxImages(modelId: string | undefined): number {
   if (!modelId) return 4;
-  const limit = CONFIG[modelId];
-  if (limit !== undefined) return limit;
-  // Strip -flex, -fast suffixes and retry
-  const base = modelId.replace(/-(flex|fast|flex-fast|fast-flex)$/, "");
+  if (CONFIG[modelId] !== undefined) return CONFIG[modelId];
+  // Strip -fast suffix and retry (not all models have a -fast variant)
+  const base = modelId.replace(/-fast$/, "");
   if (base !== modelId && CONFIG[base] !== undefined) {
     return CONFIG[base];
   }
