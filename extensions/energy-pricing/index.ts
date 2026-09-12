@@ -215,9 +215,9 @@ interface CostRibbonData {
   text: string;
 }
 
-function formatVND(usd: number, rate: number): string {
+function formatVND(usd: number, rate: number): string | undefined {
   const vnd = usd * rate;
-  if (vnd < 1) return `₫${(vnd * 1_000).toFixed(0)}`;
+  if (vnd < 100) return undefined; // too small to display meaningfully
   return `₫${vnd.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}`;
 }
 
@@ -287,7 +287,7 @@ export default function (pi: ExtensionAPI) {
     const text = entry.data?.text;
     if (!text) return undefined;
     const box = new BoxClass(2, 1);
-    box.addChild(new TextClass(theme.fg("dim", `⚡ ${text}`), 1, 0));
+    box.addChild(new TextClass(theme.fg("dim", text), 1, 0));
     return box;
   });
 
@@ -335,16 +335,19 @@ export default function (pi: ExtensionAPI) {
     // Refresh VND in background (per-call, guarded by disk cache).
     void getVND();
 
-    const parts: string[] = [];
-    parts.push(`⚡ ${formatEnergyWh(lastEnergy.joules)}`);
-    parts.push(`(${formatEnergyJ(lastEnergy.joules)})`);
-    parts.push(formatCost(lastEnergy.request_cost_usd));
+    const parts = [
+      `${formatEnergyWh(lastEnergy.joules)}`,
+      `(${formatEnergyJ(lastEnergy.joules)})`,
+      formatCost(lastEnergy.request_cost_usd),
+    ];
 
+    // VND: only include if ≥ ₫100 (sub-dong amounts are noise)
     if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
-      parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+      const vnd = formatVND(lastEnergy.request_cost_usd, vndRate);
+      if (vnd) parts.push(vnd);
     }
 
-    const ribbonText = parts.join(" ");
+    const ribbonText = `⚡ ${parts.join(" · ")}`;
 
     // Inject cost ribbon into scroll as CustomEntry (zero LLM context pollution)
     pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
