@@ -130,10 +130,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("after_provider_response", async (_, ctx) => {
     if (requestStartNs === null) return;
+    const startNs = requestStartNs;
     requestStartNs = null; // consumed
 
-    const holdS =
-      (Date.now() - Number(requestStartNs) / 1_000_000) / 1000;
+    // Use hrtime.bigint for both sides — all in nanoseconds.
+    const nowNs = process.hrtime.bigint();
+    const holdS = Number(nowNs - startNs) / 1_000_000_000;
+
     if (holdS < 0.2) return; // noise threshold
 
     // setWidget: visible in TUI sidebar, zero LLM context pollution.
