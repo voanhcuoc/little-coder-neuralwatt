@@ -40,6 +40,7 @@ let lastEnergy: {
 
 let vndRate: number | null = null;
 let lastFetchTime: number | 0 = 0;
+let lastRibbonText: string = "";
 
 // ---------- VND rate: disk cache + file lock ----------
 
@@ -215,10 +216,10 @@ interface CostRibbonData {
   text: string;
 }
 
-function formatVND(usd: number, rate: number): string | undefined {
+function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
-  if (vnd < 100) return undefined; // too small to display meaningfully
-  return `₫${vnd.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}`;
+  if (vnd >= 1) return `₫${Math.round(vnd)}`;
+  return `₫${vnd.toFixed(2)}`;
 }
 
 /** Parse SSE comments from the response body stream. */
@@ -341,13 +342,17 @@ export default function (pi: ExtensionAPI) {
       formatCost(lastEnergy.request_cost_usd),
     ];
 
-    // VND: only include if ≥ ₫100 (sub-dong amounts are noise)
+    // VND: include whenever fetch succeeded
     if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
-      const vnd = formatVND(lastEnergy.request_cost_usd, vndRate);
-      if (vnd) parts.push(vnd);
+      parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
     }
 
     const ribbonText = `⚡ ${parts.join(" · ")}`;
+
+    // Deduplicate: skip duplicate appendEntry within a short window
+    // (message_end can fire multiple times per message, creating duplicate ribbons)
+    if (ribbonText === lastRibbonText) return;
+    lastRibbonText = ribbonText;
 
     // Inject cost ribbon into scroll as CustomEntry (zero LLM context pollution)
     pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
