@@ -1,154 +1,167 @@
-import type { ExtensionAPI, AgentMessage } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
-// Energy pricing — show J / Wh, USD, VND per response
+// Energy pricing — display Neuralwatt per-request energy + cost in footer
+//
+// Neuralwatt sends energy & cost data via SSE comments in every stream:
+//   : energy {"energy_joules": ..., "energy_kwh": ...}
+//   : cost   {"request_cost_usd": ..., ...}
+//
+// We override `fetch` to intercept the response body, tee it, and parse
+// those comments in a background reader. The latest energy/cost pair is
+// stored in a module-level variable and displayed on `message_end`.
 // ============================================================================
 
-const USD_KWH = 10.0; // flat $/kWh for energy pricing
-const ENERGY_J_KEY = "energy";
+const NW_ORIGIN = "https://api.neuralwatt.com";
 
-/**
- * Per-model average energy (mWh) by prompt-size band.
- * Sourced from portal.neuralwatt.com/energy-pricing (7-day trailing).
- * Keys match the `id` field in models.json.
- */
-const MODEL_ENERGY: Record<string, Record<string, number>> = {
-  "qwen3.6-35b": {
-    "0-256": 15.12,
-    "256-1k": 64.33,
-    "1k-4k": 55.67,
-    "4k-16k": 67.60,
-    "16k-64k": 72.35,
-    "64k-256k": 93.25,
-  },
-  "qwen-3.8-27b": {
-    "0-256": 9.34,
-    "256-1k": 18.18,
-    "1k-4k": 43.20,
-    "4k-16k": 114.87,
-    "16k-64k": 630.26,
-    "64k-256k": 901.13,
-  },
-};
+let lastEnergy: {
+  joules: number;
+  kwh: number;
+  request_cost_usd: number;
+} | null = null;
 
-/**
- * Model name fallback (without provider prefix) → energy data.
- * Also covers variations like "neuralwatt/qwen3.6-35b".
- */
-function resolveModelKey(modelId: string | undefined): string | undefined {
-  if (!modelId) return undefined;
-  // Strip provider prefix (e.g. "neuralwatt/qwen3.6-35b" → "qwen3.6-35b")
-  const base = modelId.split("/").pop() ?? modelId;
-  if (MODEL_ENERGY[base]) return base;
-  // Try matching known model IDs as substrings
-  for (const key of Object.keys(MODEL_ENERGY)) {
-    if (base.includes(key) || key.includes(base)) return key;
-  }
-  return undefined;
+let vndRate: number | null = null;
+
+function formatEnergyJ(joules: number): string {
+  if (joules < 0.001) return `${(joules * 1_000_000).toFixed(1)} µJ`;
+  if (joules < 1) return `${(joules * 1_000).toFixed(1)} mJ`;
+  if (joules < 1_000) return `${joules.toFixed(1)} J`;
+  return `${(joules / 1_000).toFixed(2)} kJ`;
 }
 
-function promptSizeBand(promptTokens: number): string {
-  if (promptTokens <= 256) return "0-256";
-  if (promptTokens <= 1000) return "256-1k";
-  if (promptTokens <= 4000) return "1k-4k";
-  if (promptTokens <= 16000) return "4k-16k";
-  if (promptTokens <= 64000) return "16k-64k";
-  return "64k-256k";
+function formatEnergyWh(joules: number): string {
+  const wh = joules / 3_600;
+  if (wh >= 1) return `${wh.toFixed(3)} Wh`;
+  if (wh >= 0.001) return `${(wh * 1_000).toFixed(2)} mWh`;
+  return `${(wh * 1_000_000).toFixed(1)} µWh`;
 }
 
-function formatEnergy(mWh: number): string {
-  if (mWh < 1) {
-    return `${(mWh * 1000).toFixed(1)} µWh`;
-  }
-  if (mWh >= 1000) {
-    return `${(mWh / 1000).toFixed(3)} Wh`;
-  }
-  return `${mWh.toFixed(1)} mWh`;
-}
-
-function formatEnergyJoules(mWh: number): string {
-  const joules = mWh * 3.6;
-  if (joules < 1) {
-    return `${(joules * 1000).toFixed(1)} mJ`;
-  }
-  return `${joules.toFixed(2)} J`;
-}
-
-function formatUSD(usd: number): string {
-  if (usd < 0.0001) return `$<0.0001`;
-  return `$${usd.toFixed(4)}`;
-}
-
-let cachedVNDRate: number | null = null;
-let lastRateFetch: number = 0;
-const VND_RATE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — daily enough
-
-async function getVNDRate(): Promise<number> {
-  const now = Date.now();
-  if (cachedVNDRate && now - lastRateFetch < VND_RATE_TTL_MS) {
-    return cachedVNDRate;
-  }
-  try {
-    const resp = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
-    if (resp.ok) {
-      const data = await resp.json();
-      cachedVNDRate = data.rates.VND;
-      lastRateFetch = now;
-      return cachedVNDRate;
-    }
-  } catch {
-    /* fallback below */
-  }
-  // Fallback: known recent rate (~25,700 VND/USD)
-  // Cached to avoid repeated failed fetches today
-  cachedVNDRate = 25700;
-  lastRateFetch = now;
-  return cachedVNDRate;
+function formatCost(usd: number): string {
+  if (usd < 0.00001) return `$<0.00001`;
+  return `$${usd.toFixed(5)}`;
 }
 
 function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
-  if (vnd < 1) return `₫${(vnd * 1000).toFixed(0)}`;
+  if (vnd < 1) return `₫${(vnd * 1_000).toFixed(0)}`;
   return `₫${vnd.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}`;
 }
 
-function energyForModel(modelId: string | undefined, promptTokens: number): number | undefined {
-  const key = resolveModelKey(modelId);
-  if (!key) return undefined;
-  const band = promptSizeBand(promptTokens);
-  return MODEL_ENERGY[key][band] ?? MODEL_ENERGY[key]["4k-16k"];
+async function fetchVND(): Promise<void> {
+  try {
+    const resp = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
+    if (resp.ok) {
+      const data = await resp.json();
+      vndRate = data.rates.VND;
+    }
+  } catch {
+    // VND stays null; we just omit it from display
+  }
 }
 
-export default function (pi: ExtensionAPI) {
-  let currentModel: string | undefined;
-  let vndRate: number = 25700; // default
+/** Parse SSE comments from the response body stream. */
+async function captureSseComments(
+  body: ReadableStream<Uint8Array>,
+  onComment: (line: string) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-  // Fetch VND rate at startup
-  getVNDRate().then((r) => { vndRate = r; });
-
-  pi.on("before_provider_request", async (event) => {
-    const p = (event as any).payload;
-    if (p && typeof p === "object") {
-      currentModel = (p as any).model;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) onComment(line);
     }
-  });
+    const remaining = (buffer + decoder.decode(new Uint8Array(0), false)).trim();
+    if (remaining) onComment(remaining);
+  } catch {
+    // SDK may abort the tee; best-effort
+  } finally {
+    reader.releaseLock();
+  }
+}
 
-  pi.on("message_end", async (event, ctx) => {
-    const msg = event.message;
-    if (msg?.role !== "assistant") return;
-    if (!currentModel || currentModel.includes("anthropic")) return;
+function parseSseComment(line: string): void {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith(": ")) return;
 
-    const usage = (msg as any).usage as { input?: number; output?: number } | undefined;
-    if (!usage || !usage.input) return;
+  try {
+    if (trimmed.startsWith(": energy ")) {
+      const obj = JSON.parse(trimmed.slice(9)) as {
+        energy_joules?: number;
+        energy_kwh?: number;
+      };
+      if (lastEnergy?.joules === obj.energy_joules) return; // dedup
+      // If we already have a cost, keep it
+      lastEnergy = {
+        joules: obj.energy_joules ?? lastEnergy?.joules ?? 0,
+        kwh: obj.energy_kwh ?? lastEnergy?.kwh ?? 0,
+        request_cost_usd: lastEnergy?.request_cost_usd ?? 0,
+      };
+    } else if (trimmed.startsWith(": cost ")) {
+      const obj = JSON.parse(trimmed.slice(7)) as {
+        request_cost_usd?: number;
+      };
+      if (!lastEnergy) return;
+      lastEnergy.request_cost_usd = obj.request_cost_usd ?? 0;
+    }
+  } catch {
+    // Malformed SSE comment; ignore
+  }
+}
 
-    const mWh = energyForModel(currentModel, usage.input);
-    if (mWh === undefined) return;
+// Telemetry: track how many times we've already wrapped fetch to avoid double-wrapping
+let fetchWrapped = false;
 
-    const costUSD = (mWh / 1000) * USD_KWH;
-    vndRate = await getVNDRate();
+export default function (pi: ExtensionAPI) {
+  // Kick off VND fetch at startup
+  fetchVND();
 
-    // Format: "🔋 72.4 mWh (260.6 J) · $0.0007 · ₫18,000"
-    const line = `🔋 ${formatEnergy(mWh)} (${formatEnergyJoules(mWh)}) · ${formatUSD(costUSD)} · ${formatVND(costUSD, vndRate)}`;
-    ctx.ui.setStatus(ENERGY_J_KEY, line);
+  // Wrap fetch ONCE
+  if (!fetchWrapped) {
+    fetchWrapped = true;
+    const originalFetch = globalThis.fetch;
+    const wrappedFetch: typeof fetch = async (input, init) => {
+      // Only intercept Neuralwatt chat completions
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith(NW_ORIGIN + "/v1/chat/completions")) return originalFetch(input, init);
+
+      const response = await originalFetch(input, init);
+
+      if (response.ok && response.body) {
+        const [sdkBody, quotaBody] = response.body.tee();
+        // Read SSE comments in background (best-effort)
+        void captureSseComments(quotaBody, parseSseComment);
+        return new Response(sdkBody, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+      }
+
+      return response;
+    };
+    globalThis.fetch = wrappedFetch;
+  }
+
+  pi.on("message_end", (_event, ctx) => {
+    if (!lastEnergy || lastEnergy.joules <= 0) return;
+
+    const parts: string[] = [];
+    parts.push(`⚡ ${formatEnergyWh(lastEnergy.joules)}`);
+    parts.push(`(${formatEnergyJ(lastEnergy.joules)})`);
+    parts.push(formatCost(lastEnergy.request_cost_usd));
+
+    if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
+      parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+    }
+
+    ctx.ui.setStatus("nw-energy", parts.join(" "));
   });
 }
