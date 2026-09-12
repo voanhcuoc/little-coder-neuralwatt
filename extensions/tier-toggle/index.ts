@@ -58,8 +58,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      setTier(tier);
-      ctx.ui.notify(`Service tier: ${tier}`, "info");
+      setTier(requested as Tier);
+      ctx.ui.notify(`Service tier: ${requested}`, "info");
     },
   });
 
