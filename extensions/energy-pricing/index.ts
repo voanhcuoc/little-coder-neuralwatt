@@ -20,6 +20,7 @@ import * as path from "node:path";
 const NW_ORIGIN = "https://api.neuralwatt.com";
 const CACHE_DIR = __dirname;
 const RATE_FILE = path.join(CACHE_DIR, ".vnd-rate.json");
+const RATE_TIMESTAMP_FILE = path.join(CACHE_DIR, ".vnd-rate-attempt");
 const LOCK_FILE = path.join(CACHE_DIR, ".rate-lock");
 const RATE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const POLL_INTERVAL_MS = 1500;
@@ -63,12 +64,35 @@ function saveCachedRate(rate: number): void {
   }
 }
 
+// Attempt timestamp — cross-process gate. At most one fetch
+// attempt per TTL window regardless of how many processes call.
+function loadAttemptTimestamp(): number | null {
+  try {
+    const raw = fs.readFileSync(RATE_TIMESTAMP_FILE, "utf-8");
+    const ms = Number(raw);
+    return isFinite(ms) ? ms : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveAttemptTimestamp(): void {
+  try {
+    // Atomic write
+    const tmp = RATE_TIMESTAMP_FILE + ".tmp";
+    fs.writeFileSync(tmp, String(Date.now()));
+    fs.renameSync(tmp, RATE_TIMESTAMP_FILE);
+  } catch {
+    // Non-critical; another process will handle it
+  }
+}
+
 function tryAcquireLock(): boolean {
   try {
     fs.writeFileSync(LOCK_FILE, String(process.pid));
     return true;
   } catch {
-    return false; // someone else has it
+    return false;
   }
 }
 
@@ -88,26 +112,38 @@ function releaseLock(): void {
  * - Failure → fall back to cached value (even if stale) or null.
  */
 async function getVND(): Promise<number | null> {
-  // In-memory guard — vndRate is the single source of truth in a live session
-  if (vndRate !== null) {
-    lastFetchTime = Date.now();
+  // In-memory guard — vndRate is the single source of truth in a live session.
+  if (vndRate !== null && Date.now() - lastFetchTime < RATE_TTL_MS) {
     return vndRate;
   }
 
+  // Cross-process guard — disk-based attempt timestamp.
+  // Prevents more than one fetch attempt per TTL window,
+  // regardless of how many processes call us concurrently.
   const cached = loadCachedRate();
   if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < RATE_TTL_MS) {
-    lastFetchTime = Date.now();
     vndRate = cached.rate;
+    lastFetchTime = Date.now();
     return cached.rate;
   }
 
-  // Only allow one fetch attempt per TTL window so we never exceed 2 API calls/day
-  if (lastFetchTime > 0 && Date.now() - lastFetchTime < RATE_TTL_MS) {
-    return cached?.rate ?? null;
+  const lastAttempt = loadAttemptTimestamp();
+  if (lastAttempt && Date.now() - lastAttempt < RATE_TTL_MS) {
+    // We're within the TTL window — another process already started fetching.
+    // Either the cache got updated (poll for it) or the attempt failed
+    // (return null / stale). In either case, don't trigger another fetch.
+    const fresh = loadCachedRate();
+    if (fresh) {
+      vndRate = fresh.rate;
+      lastFetchTime = Date.now();
+      return fresh.rate;
+    }
+    return null;
   }
 
-  // Mark so no concurrent call in this session retries within TTL
-  lastFetchTime = Date.now();
+  // Write attempt timestamp BEFORE acquiring lock — this is the
+  // cross-process gate that prevents double-fetching.
+  saveAttemptTimestamp();
 
   if (tryAcquireLock()) {
     // We got the lock — fetch for everyone and update the disk cache
@@ -118,6 +154,8 @@ async function getVND(): Promise<number | null> {
         const rate = data.rates.VND;
         if (rate > 0) {
           saveCachedRate(rate);
+          vndRate = rate;
+          lastFetchTime = Date.now();
           return rate;
         }
       }
@@ -127,12 +165,16 @@ async function getVND(): Promise<number | null> {
       releaseLock();
     }
   } else {
-    // Another session is fetching — poll the cache file until it appears
+    // Another session holds the lock — poll the cache file until it appears
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       const fresh = loadCachedRate();
-      if (fresh) return fresh.rate;
+      if (fresh) {
+        vndRate = fresh.rate;
+        lastFetchTime = Date.now();
+        return fresh.rate;
+      }
     }
   }
 
