@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // ============================================================================
 // Energy pricing — display Neuralwatt per-request energy + cost in footer
@@ -10,9 +12,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // We override `fetch` to intercept the response body, tee it, and parse
 // those comments in a background reader. The latest energy/cost pair is
 // stored in a module-level variable and displayed on `message_end`.
+//
+// VND exchange rate: shared disk cache (~24h TTL, file-lock to prevent
+// multiple sessions from hammering the API simultaneously).
 // ============================================================================
 
 const NW_ORIGIN = "https://api.neuralwatt.com";
+const CACHE_DIR = __dirname;
+const RATE_FILE = path.join(CACHE_DIR, ".vnd-rate.json");
+const LOCK_FILE = path.join(CACHE_DIR, ".rate-lock");
+const RATE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+const POLL_INTERVAL_MS = 1500;
 
 let lastEnergy: {
   joules: number;
@@ -21,6 +31,99 @@ let lastEnergy: {
 } | null = null;
 
 let vndRate: number | null = null;
+
+// ---------- VND rate: disk cache + file lock ----------
+
+interface RateCache {
+  rate: number;
+  fetchedAt: string;
+}
+
+function loadCachedRate(): RateCache | null {
+  try {
+    const raw = fs.readFileSync(RATE_FILE, "utf-8");
+    const parsed: RateCache = JSON.parse(raw);
+    if (parsed.rate > 0) return parsed;
+  } catch {
+    // No cache yet
+  }
+  return null;
+}
+
+function saveCachedRate(rate: number): void {
+  try {
+    const cache: RateCache = { rate, fetchedAt: new Date().toISOString() };
+    // Atomic write via tmp + rename
+    const tmp = RATE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(cache));
+    fs.renameSync(tmp, RATE_FILE);
+  } catch {
+    // Best-effort
+  }
+}
+
+function tryAcquireLock(): boolean {
+  try {
+    fs.writeFileSync(LOCK_FILE, String(process.pid));
+    return true;
+  } catch {
+    return false; // someone else has it
+  }
+}
+
+function releaseLock(): void {
+  try {
+    fs.unlinkSync(LOCK_FILE);
+  } catch {
+    // Already gone
+  }
+}
+
+/**
+ * Fetch or return cached VND rate.
+ * - Fresh cache → return immediately.
+ * - Stale cache → try to fetch (with file lock so only one session hits the API).
+ * - Contention → poll the cache file until it's written, then return.
+ * - Failure → fall back to cached value (even if stale) or null.
+ */
+async function getVND(): Promise<number | null> {
+  const cached = loadCachedRate();
+  if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < RATE_TTL_MS) {
+    return cached.rate;
+  }
+
+  if (tryAcquireLock()) {
+    // We got the lock — fetch for everyone and update the disk cache
+    try {
+      const resp = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
+      if (resp.ok) {
+        const data = await resp.json();
+        const rate = data.rates.VND;
+        if (rate > 0) {
+          saveCachedRate(rate);
+          return rate;
+        }
+      }
+    } catch {
+      // Network error; fall through to stale cache
+    } finally {
+      releaseLock();
+    }
+  } else {
+    // Another session is fetching — poll the cache file until it appears
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      const fresh = loadCachedRate();
+      if (fresh) return fresh.rate;
+    }
+  }
+
+  // Fallback: stale cache or null
+  return cached?.rate ?? null;
+}
+
+// ---------- Formatting ----------
 
 function formatEnergyJ(joules: number): string {
   if (joules < 0.001) return `${(joules * 1_000_000).toFixed(1)} µJ`;
@@ -45,18 +148,6 @@ function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
   if (vnd < 1) return `₫${(vnd * 1_000).toFixed(0)}`;
   return `₫${vnd.toLocaleString("vi-VN", { maximumFractionDigits: 0 })}`;
-}
-
-async function fetchVND(): Promise<void> {
-  try {
-    const resp = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
-    if (resp.ok) {
-      const data = await resp.json();
-      vndRate = data.rates.VND;
-    }
-  } catch {
-    // VND stays null; we just omit it from display
-  }
 }
 
 /** Parse SSE comments from the response body stream. */
@@ -115,19 +206,16 @@ function parseSseComment(line: string): void {
   }
 }
 
-// Telemetry: track how many times we've already wrapped fetch to avoid double-wrapping
+// Extension entry point
+
 let fetchWrapped = false;
 
 export default function (pi: ExtensionAPI) {
-  // Kick off VND fetch at startup
-  fetchVND();
-
-  // Wrap fetch ONCE
+  // Wrap fetch ONCE (per process)
   if (!fetchWrapped) {
     fetchWrapped = true;
     const originalFetch = globalThis.fetch;
     const wrappedFetch: typeof fetch = async (input, init) => {
-      // Only intercept Neuralwatt chat completions
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (!url.startsWith(NW_ORIGIN + "/v1/chat/completions")) return originalFetch(input, init);
@@ -136,7 +224,6 @@ export default function (pi: ExtensionAPI) {
 
       if (response.ok && response.body) {
         const [sdkBody, quotaBody] = response.body.tee();
-        // Read SSE comments in background (best-effort)
         void captureSseComments(quotaBody, parseSseComment);
         return new Response(sdkBody, {
           headers: response.headers,
@@ -150,8 +237,20 @@ export default function (pi: ExtensionAPI) {
     globalThis.fetch = wrappedFetch;
   }
 
-  pi.on("message_end", (_event, ctx) => {
+  // Load cached rate synchronously on startup
+  const initialCache = loadCachedRate();
+  if (initialCache) vndRate = initialCache.rate;
+
+  // Kick off async fetch (updates in-memory + disk cache)
+  getVND().then((r) => {
+    if (r) vndRate = r;
+  });
+
+  pi.on("message_end", async (_event, ctx) => {
     if (!lastEnergy || lastEnergy.joules <= 0) return;
+
+    // Refresh VND if needed (long sessions spanning days)
+    vndRate = await getVND();
 
     const parts: string[] = [];
     parts.push(`⚡ ${formatEnergyWh(lastEnergy.joules)}`);
