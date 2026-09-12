@@ -310,17 +310,11 @@ This approach has two key advantages over using `-flex` model names:
 | `standard` | absent (or `"auto"`/`"default"`) | full | immediate |
 | `flex` | `"flex"` | 65% of standard (~35% off) | may delay on busy fleet |
 
-### Persistence
+### Per-session
 
-Tier is persisted to `~/.config/little-coder/service-tier` as a plain text file
-(`standard` or `flex`). On session start, the file is read so the previously
-selected tier is restored across restarts.
+Tier is a per-session (process-level) property: `process.env.LITTLE_CODER_SERVICE_TIER`. Each little-coder process tracks its own tier independently, so two concurrent sessions can use different tiers. No disk persistence is needed.
 
 ### Implementation details
-
-- Handler sets `process.env.LITTLE_CODER_SERVICE_TIER` + persists to file
-- The `before_provider_request` hook reads tier at **each** request time via
-  `readTier()`: checks env var first (live), then file (persistent fallback)
 - `injectServiceTier()` only sets `service_tier: "flex"` when tier is flex and
   the field is not already present
 - No `service_tier` field is added for standard tier (it's the default)
