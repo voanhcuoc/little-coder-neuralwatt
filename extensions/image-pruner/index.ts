@@ -1,11 +1,11 @@
 import type { ExtensionAPI, AgentMessage } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 // Per-model image limits sourced from Neuralwatt /v1/models metadata.
 // Maps model id → max_images. Updated when models change.
-// Path is relative to this file's parent directory (extensions/image-pruner/).
 const CONFIG = JSON.parse(
-  require(path.join(__dirname, "max-images.json")) as string,
+  fs.readFileSync(path.join(__dirname, "max-images.json"), "utf-8"),
 ) as Record<string, number>;
 
 const PLACEHOLDER = "[image pruned: exceeded per-request image limit]";
