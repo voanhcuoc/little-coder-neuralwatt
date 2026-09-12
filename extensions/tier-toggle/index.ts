@@ -51,16 +51,26 @@ export default function (pi: ExtensionAPI) {
   pi.registerEntryRenderer(CUSTOM_TYPE, holdRenderer);
 
   /**
-   * Measure total hold time = wall-clock from request send to response complete.
+   * Measure total hold time = wall-clock from request send to response
+   * fully consumed.
    *
-   * The flex server holds the HTTP connection open with keepalive frames from
-   * the moment we send the request until the last token arrives. ALL of that
-   * elapsed time IS hold time — the user cannot see tokens, cannot interact,
-   * the connection is held the entire time.
+   * Event order for one LLM call:
+   *   1. before_provider_request       — request sent (queue may start here
+   *                                     for flex tier — server holds TCP
+   *                                     connection open while queued)
+   *   2. after_provider_response       — HTTP headers received (queue
+   *                                     complete, but body not read yet)
+   *   3. message_start                 — first token stream event
+   *   4. message_update × n            — streaming tokens
+   *   5. message_end                   — stream fully consumed
    *
-   * Measured with Date.now() from before_provider_request to after_provider_response.
+   * The flex server holds the TCP connection from step 1 to step 5. The
+   * user can't interact during that entire time. All of it is hold time.
+   *
+   * We do NOT subtract generation time because the user genuinely cannot
+   * interact while tokens are streaming.
    */
-  let requestWallTime: number | null = null;
+  let requestStartMs: number | null = null;
 
   pi.on("before_provider_request", async (event) => {
     (event as any).payload = injectServiceTier(
@@ -68,14 +78,14 @@ export default function (pi: ExtensionAPI) {
       getTier(),
     );
     if (getTier() === "flex") {
-      requestWallTime = Date.now();
+      requestStartMs = Date.now();
     }
   });
 
-  pi.on("after_provider_response", async () => {
-    if (requestWallTime === null) return;
-    const holdMs = Date.now() - requestWallTime;
-    requestWallTime = null;
+  pi.on("message_end", ({ message }) => {
+    if (message.role !== "assistant" || requestStartMs === null) return;
+    const holdMs = Date.now() - requestStartMs;
+    requestStartMs = null;
 
     if (holdMs < 200) return; // noise threshold (200ms)
     pi.appendEntry(CUSTOM_TYPE, { holdSec: holdMs / 1000 });
