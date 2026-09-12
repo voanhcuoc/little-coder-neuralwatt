@@ -246,11 +246,15 @@ export default function (pi: ExtensionAPI) {
     if (r) vndRate = r;
   });
 
-  pi.on("message_end", async (_event, ctx) => {
+  pi.on("message_end", (_event, ctx) => {
     if (!lastEnergy || lastEnergy.joules <= 0) return;
 
-    // Refresh VND if needed (long sessions spanning days)
-    vndRate = await getVND();
+    // Refresh VND in background — never block UI rendering.
+    // On long-running / very stale sessions this won't update
+    // until the next response, but the UI responds immediately.
+    void getVND().then((r) => {
+      if (r) vndRate = r;
+    });
 
     const parts: string[] = [];
     parts.push(`⚡ ${formatEnergyWh(lastEnergy.joules)}`);
