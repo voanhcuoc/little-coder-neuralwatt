@@ -13,13 +13,15 @@ npm install -g little-coder
 # 2. Store your Neuralwatt API key in KWallet
 printf '%s' 'sk-YOUR-KEY' | kwallet-query -f Passwords -w neuralwatt-api-key kdewallet
 
-# 3. Copy the config and extension
+# 3. Copy the config and extensions
 mkdir -p ~/.config/little-coder
 cp models.json ~/.config/little-coder/models.json
 mkdir -p ~/.config/little-coder/extensions/permission-toggle
 cp extensions/permission-toggle/index.ts ~/.config/little-coder/extensions/permission-toggle/index.ts
 mkdir -p ~/.config/little-coder/extensions/image-pruner
 cp extensions/image-pruner/index.ts ~/.config/little-coder/extensions/image-pruner/index.ts
+mkdir -p ~/.config/little-coder/extensions/tier-toggle
+cp extensions/tier-toggle/index.ts ~/.config/little-coder/extensions/tier-toggle/index.ts
 
 # 4. Set permission mode to manual (optional but recommended)
 #    For fish:
@@ -34,8 +36,9 @@ little-coder --no-tools --model neuralwatt/qwen3.6-35b -p "What is 2+2? Reply wi
 
 ```
 models.json                          →  copy to ~/.config/little-coder/models.json
-extensions/permission-toggle/index.ts →  copy to ~/.config/little-coder/extensions/permission-toggle/index.ts
-extensions/image-pruner/index.ts     →  copy to ~/.config/little-coder/extensions/image-pruner/index.ts
+extensions/permission-toggle/index.ts    →  copy to ~/.config/little-coder/extensions/permission-toggle/index.ts
+extensions/image-pruner/index.ts         →  copy to ~/.config/little-coder/extensions/image-pruner/index.ts
+extensions/tier-toggle/index.ts          →  copy to ~/.config/little-coder/extensions/tier-toggle/index.ts
 README.md                            →  this file
 AGENTS.md                            →  full technical reference for AI agents setting up this config
 ```
@@ -49,6 +52,8 @@ AGENTS.md                            →  full technical reference for AI agents
 - Permission mode set to `manual` (every shell command prompts before running)
 - `/permission` slash command to switch modes at runtime (manual ↔ auto ↔ accept-all)
 - Image pruning: automatically strips excess images (beyond 4) from context before each API request
+- `/tier` slash command to switch between standard and flex service tiers
+  (`/tier flex` for discounted requests that may experience slight delays; `/tier standard` for always-on)
 
 ## Notes
 

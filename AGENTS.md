@@ -273,6 +273,76 @@ The handler sets `process.env.LITTLE_CODER_PERMISSION_MODE` directly. For
 Tested via PTY: `/permission` shows current mode; `/permission accept-all`
 switches and confirms; the next tool call respects the new mode immediately.
 
+## Tier toggle extension
+
+User extension at `extensions/tier-toggle/index.ts`. Installs to
+`~/.config/little-coder/extensions/tier-toggle/index.ts`.
+
+Registers the `/tier` slash command to switch between **standard** and **flex**
+Neuralwatt service tiers at runtime without restarting the session.
+
+### How it works
+
+The extension hooks the `before_provider_request` event, which fires before
+every provider request via `runner.emitBeforeProviderRequest(payload)` (source:
+`sdk.js` L74-78). The handler reads the current tier and injects the
+`service_tier` field into the request payload when set to `flex`.
+
+This approach has two key advantages over using `-flex` model names:
+1. **Caching is preserved** — the model name stays identical, so prompt cache
+   keys don't change
+2. **No model name duplication** — standard and flex variants share the same
+   server-side prompt cache, so identical prompts hit the same cache regardless
+   of tier
+
+### Usage
+
+```
+/tier              # show current tier
+/tier standard      # use standard tier (default, immediate response)
+/tier flex          # use flex tier (35% discounted, may delay first token)
+```
+
+### Tier states
+
+| Tier | service_tier in request | Price | Latency |
+|---|---|---|---|
+| `standard` | absent (or `"auto"`/`"default"`) | full | immediate |
+| `flex` | `"flex"` | 65% of standard (~35% off) | may delay on busy fleet |
+
+### Persistence
+
+Tier is persisted to `~/.config/little-coder/service-tier` as a plain text file
+(`standard` or `flex`). On session start, the file is read so the previously
+selected tier is restored across restarts.
+
+### Implementation details
+
+- Handler sets `process.env.LITTLE_CODER_SERVICE_TIER` + persists to file
+- The `before_provider_request` hook reads tier at **each** request time via
+  `readTier()`: checks env var first (live), then file (persistent fallback)
+- `injectServiceTier()` only sets `service_tier: "flex"` when tier is flex and
+  the field is not already present
+- No `service_tier` field is added for standard tier (it's the default)
+- Works with any OpenAI-compatible provider, not just Neuralwatt
+
+### Flex tier gotchas
+
+- **Streaming required**: non-streaming requests with `service_tier: "flex"`
+  fall back to standard tier and are billed at standard price
+- **Not for interactive use**: Flex is designed for batch/coding-agent work where
+  occasional delayed first tokens are acceptable
+- **Separate concurrency pool**: Flex traffic uses a lower-priority pool, so it
+  won't consume standard concurrency slots
+- **Can retry**: When a retry happens (auto-retry on transient errors), the tier
+  is re-read from state, so retrying after a fail respects the current tier
+
+### Verification
+
+Tested via PTY: `/tier flex` switches and confirms; the next request to
+Neuralwatt includes `"service_tier": "flex"` in the request body; `/tier
+standard` switches back and requests use standard pricing again.
+
 ## Permission gate
 
 Source: `.pi/extensions/permission-gate/index.ts` +
