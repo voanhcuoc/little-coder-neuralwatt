@@ -207,7 +207,9 @@ function formatEnergyWh(joules: number): string {
 }
 
 function formatCost(usd: number): string {
-  return `$${usd.toFixed(5)}`;
+  if (usd < 0.01) return `${usd.toFixed(5)} USD (under 1 cent)`;
+  if (usd < 1) return `${usd.toFixed(3)} USD (${Math.round(usd * 100)} cent)`;
+  return `${usd.toFixed(2)} USD`;
 }
 
 /** Cost ribbon rendered in the scroll area. */
@@ -217,8 +219,9 @@ interface CostRibbonData {
 
 function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
-  if (vnd >= 1) return `₫${Math.round(vnd)}`;
-  return `₫${vnd.toFixed(2)}`;
+  if (vnd === 0) return "0 VND";
+  if (vnd < 1) return `${vnd.toFixed(3)} VND`;
+  return `${Math.round(vnd)} VND`;
 }
 
 /** Parse SSE comments from the response body stream. */
