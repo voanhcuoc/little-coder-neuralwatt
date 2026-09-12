@@ -1,39 +1,31 @@
 import type { ExtensionAPI, AgentMessage } from "@earendil-works/pi-coding-agent";
+import * as path from "node:path";
 
-// Prevents "too many images" API errors by pruning excess image content
-// blocks from the context before each provider request. Replaces pruned
-// images with a text placeholder so the model knows something was there.
-//
-// Neuralwatt's qwen3.6-35b reports max_images: 4 in its /v1/models metadata,
-// but pi doesn't read or enforce that limit. Without this extension, if the
-// agent reads 5+ images (via the read tool with image files, or user-
-// pasted images), the API returns a 400 error and the agent loop crashes
-// — compaction doesn't help because it keeps the recent messages (with all
-// their images) intact in the "kept" portion.
-//
-// This extension hooks the "context" event, which fires before every
-// provider request (via runner.emitContext). It counts image content blocks
-// across all messages, and if the total exceeds the limit, replaces the
-// oldest ones with a text placeholder.
-//
-// The limit defaults to 4 (Qwen3.6-35B's max_images from the live API).
-// Override with LITTLE_CODER_MAX_IMAGES env var. Set to 0 to disable.
+// Per-model image limits sourced from Neuralwatt /v1/models metadata.
+// Maps model id → max_images. Updated when models change.
+// Path is relative to this file's parent directory (extensions/image-pruner/).
+const CONFIG = JSON.parse(
+  require(path.join(__dirname, "max-images.json")) as string,
+) as Record<string, number>;
 
-const DEFAULT_MAX_IMAGES = 4;
 const PLACEHOLDER = "[image pruned: exceeded per-request image limit]";
 
-interface ImageBlock {
-  type: "image";
-  mimeType?: string;
-  data: string;
-}
+let currentModel: string | undefined;
 
-function getMaxImages(): number {
-  const v = process.env.LITTLE_CODER_MAX_IMAGES;
-  if (v === undefined || v === "") return DEFAULT_MAX_IMAGES;
-  const n = parseInt(v, 10);
-  if (isNaN(n) || n < 0) return DEFAULT_MAX_IMAGES;
-  return n;
+/**
+ * Resolve the max_images limit for the model being used.
+ * Falls back to 4 if the model is unknown (conservative default).
+ */
+function getMaxImages(modelId: string | undefined): number {
+  if (!modelId) return 4;
+  const limit = CONFIG[modelId];
+  if (limit !== undefined) return limit;
+  // Strip -flex, -fast suffixes and retry
+  const base = modelId.replace(/-(flex|fast|flex-fast|fast-flex)$/, "");
+  if (base !== modelId && CONFIG[base] !== undefined) {
+    return CONFIG[base];
+  }
+  return 4; // conservative fallback
 }
 
 function countImages(messages: AgentMessage[]): number {
@@ -49,45 +41,49 @@ function countImages(messages: AgentMessage[]): number {
 }
 
 function pruneImages(messages: AgentMessage[], maxImages: number): AgentMessage[] {
-  let imageCount = 0;
-  // Count total images first
   const total = countImages(messages);
   if (total <= maxImages) return messages;
 
-  // How many to prune: keep the newest maxImages, prune the rest
   const toPrune = total - maxImages;
   let pruned = 0;
 
   return messages.map((msg) => {
     if (!Array.isArray(msg.content)) return msg;
     let previousWasPlaceholder = false;
-    const newContent = msg.content.map((block) => {
-      if (pruned >= toPrune) return block;
-      if ((block as any).type === "image") {
-        if (!previousWasPlaceholder) {
+    const newContent = msg.content
+      .map((block) => {
+        if (pruned >= toPrune) return block;
+        if ((block as any).type === "image") {
+          if (!previousWasPlaceholder) {
+            pruned++;
+            previousWasPlaceholder = true;
+            return { type: "text", text: PLACEHOLDER };
+          }
           pruned++;
-          previousWasPlaceholder = true;
-          return { type: "text", text: PLACEHOLDER };
+          return null; // collapse consecutive images
         }
-        // Collapse consecutive images into one placeholder
-        pruned++;
-        return null;
-      }
-      previousWasPlaceholder = false;
-      return block;
-    }).filter((b) => b !== null);
+        previousWasPlaceholder = false;
+        return block;
+      })
+      .filter((b) => b !== null);
 
     return { ...msg, content: newContent };
   });
 }
 
 export default function (pi: ExtensionAPI) {
-  const maxImages = getMaxImages();
-  if (maxImages === 0) return;
+  pi.on("before_provider_request", async (event) => {
+    const p = (event as any).payload;
+    if (p && typeof p === "object") {
+      currentModel = (p as any).model;
+    }
+  });
 
   pi.on("context", async (event, _ctx) => {
     const messages = (event as any).messages as AgentMessage[];
     if (!Array.isArray(messages) || messages.length === 0) return;
+
+    const maxImages = getMaxImages(currentModel);
 
     const imageCount = countImages(messages);
     if (imageCount <= maxImages) return;
