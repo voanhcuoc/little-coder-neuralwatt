@@ -207,7 +207,6 @@ function formatEnergyWh(joules: number): string {
 }
 
 function formatCost(usd: number): string {
-  if (usd < 0.00001) return `$<0.00001`;
   return `$${usd.toFixed(5)}`;
 }
 
@@ -338,8 +337,8 @@ export default function (pi: ExtensionAPI) {
 
     const parts = [
       `${formatEnergyWh(lastEnergy.joules)}`,
-      `(${formatEnergyJ(lastEnergy.joules)})`,
-      formatCost(lastEnergy.request_cost_usd),
+      `${formatEnergyJ(lastEnergy.joules)}`,
+      `${formatCost(lastEnergy.request_cost_usd)}`,
     ];
 
     // VND: include whenever fetch succeeded
