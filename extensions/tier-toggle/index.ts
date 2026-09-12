@@ -46,14 +46,7 @@ export default function (pi: ExtensionAPI) {
       const requested = args.trim().toLowerCase();
 
       if (!requested) {
-        const current = getTier();
-        ctx.ui.notify(`Service tier: ${current}`, "info");
-        if (current === "flex") {
-          ctx.ui.notify(
-            "Flex tier: requests may experience delay before first token. Use /tier standard to switch back.",
-            "info",
-          );
-        }
+        ctx.ui.notify(`Service tier: ${getTier()}`, "info");
         return;
       }
 
@@ -65,16 +58,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const tier = requested as Tier;
       setTier(tier);
-
-      ctx.ui.notify(`Service tier: ${tier}`, "success");
-      if (tier === "flex") {
-        ctx.ui.notify(
-          "Remember: streaming is required for flex tier. Non-streaming requests fall back to standard tier.",
-          "info",
-        );
-      }
+      ctx.ui.notify(`Service tier: ${tier}`, "info");
     },
   });
 
