@@ -50,39 +50,35 @@ export default function (pi: ExtensionAPI) {
   const CUSTOM_TYPE = "nw-flex-hold";
   pi.registerEntryRenderer(CUSTOM_TYPE, holdRenderer);
 
-  let requestStartNs: bigint | null = null;
-
   /**
-   * Measure hold (queue) time from request send to first token arrival.
+   * Measure total hold time = wall-clock from request send to response complete.
    *
-   * We measure delta to MESSAGE_START (not after_provider_response).
-   * after_provider_response fires when the ENTIRE streaming response
-   * completes — so that measurement includes the full generation time
-   * on top of the queue hold, making numbers look inflated.
+   * The flex server holds the HTTP connection open with keepalive frames from
+   * the moment we send the request until the last token arrives. ALL of that
+   * elapsed time IS hold time — the user cannot see tokens, cannot interact,
+   * the connection is held the entire time.
    *
-   * message_start fires on the first token/content chunk = actual
-   * time user waited before seeing anything (TTFT = hold time).
+   * Measured with Date.now() from before_provider_request to after_provider_response.
    */
+  let requestWallTime: number | null = null;
+
   pi.on("before_provider_request", async (event) => {
     (event as any).payload = injectServiceTier(
       (event as any).payload,
       getTier(),
     );
-    requestStartNs = getTier() === "flex"
-      ? BigInt(process.hrtime.bigint())
-      : null;
+    if (getTier() === "flex") {
+      requestWallTime = Date.now();
+    }
   });
 
-  pi.on("message_start", ({ message }) => {
-    if (message.role !== "assistant" || !requestStartNs) return;
-    // Clear immediately so subsequent message_start events
-    // (e.g. after tool calls) don't emit annotations.
-    const startNs = requestStartNs;
-    requestStartNs = null;
-    const nowNs = BigInt(process.hrtime.bigint());
-    const holdS = Number(nowNs - startNs) / 1e9;
-    if (holdS < 0.2) return; // noise threshold
-    pi.appendEntry(CUSTOM_TYPE, { holdSec: holdS });
+  pi.on("after_provider_response", async () => {
+    if (requestWallTime === null) return;
+    const holdMs = Date.now() - requestWallTime;
+    requestWallTime = null;
+
+    if (holdMs < 200) return; // noise threshold (200ms)
+    pi.appendEntry(CUSTOM_TYPE, { holdSec: holdMs / 1000 });
   });
 
   pi.registerCommand("tier", {
