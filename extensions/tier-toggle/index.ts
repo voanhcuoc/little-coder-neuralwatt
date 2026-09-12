@@ -149,6 +149,8 @@ export default function (pi: ExtensionAPI) {
     if (holdS < 0.2) return; // noise threshold
 
     // CustomEntry: visible in TUI scroll, NOT in LLM conversation context.
-    ctx.appendEntry(entryCustomType, { holdSec: holdS });
+    // ctx.appendEntry is not available on event-handler context (createContext()
+    // exposes sessionManager but not the runtime action directly).
+    ctx.sessionManager.appendCustomEntry(entryCustomType, { holdSec: holdS });
   });
 }
