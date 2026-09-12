@@ -38,9 +38,26 @@ function injectServiceTier(payload: unknown, tier: Tier): unknown {
   return payload;
 }
 
+/**
+ * Convert seconds to a human-readable hold duration.
+ * e.g. 0.5 → "500ms", 3.2 → "3.2s", 65 → "1m 5s"
+ */
+function formatHold(sec: number): string {
+  if (sec < 1) return `${Math.round(sec * 1000)}ms`;
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}m ${s}s`;
+}
+
 export default function (pi: ExtensionAPI) {
+  // Per-request timing. Events fire sequentially:
+  //   before_provider_request → after_provider_response → message_start → message_end → agent_end
+  let requestStartNs: bigint | null = null;
+
   pi.registerCommand("tier", {
-    description: "Switch service tier: standard (default) or flex (discounted, may delay first token)",
+    description:
+      "Switch service tier: standard (default) or flex (discounted, may delay first token)",
     argumentHint: "standard|flex",
     handler: async (args: string, ctx) => {
       const requested = args.trim().toLowerCase();
@@ -63,9 +80,46 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Inject service_tier into every provider request
+  // --- Per-request lifetime hooks (TUI status bar only — never touches message content) ---
+
+  /** Record request start and show initial "waiting" status for flex tier. */
   pi.on("before_provider_request", async (event) => {
     const payload = (event as any).payload;
-    return injectServiceTier(payload, getTier());
+    const tier = getTier();
+    if (tier === "flex") {
+      requestStartNs = BigInt(process.hrtime.bigint());
+    } else {
+      requestStartNs = null;
+    }
+    return injectServiceTier(payload, tier);
+  });
+
+  /**
+   * Compute hold time from wall-clock delta and display in the TUI status bar.
+   *
+   * Neuralwatt flex tier keeps the HTTP connection open with keepalive frames
+   * until capacity opens up, then starts the stream. There is NO server-side
+   * hold-time field in the response, headers, or SSE stream (confirmed by
+   * reading the OpenAPI spec, streaming guide, and flex tier docs).
+   *
+   * The gateway tracks `ttft` (time-to-first-token) server-side — visible in
+   * the /v1/usage/requests per-request log — but it is not echoed in the
+   * inference response. We measure it live: the delta between request send and
+   * the first byte of the stream is the client-side hold duration.
+   */
+  pi.on("message_start", async (_event, ctx) => {
+    if (requestStartNs === null) return;
+    requestStartNs = null; // consumed
+
+    const holdS = (Date.now() - Number(requestStartNs) / 1_000_000) / 1000;
+    // Don't pollute the footer for negligible delays
+    if (holdS < 0.2) return;
+
+    ctx.ui.setStatus("flex", `⏸ ${formatHold(holdS)} hold`);
+  });
+
+  /** Clear the flex status when the entire agent turn finishes. */
+  pi.on("agent_end", async (_, ctx) => {
+    ctx.ui.setStatus("flex", undefined);
   });
 }
