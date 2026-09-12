@@ -19,10 +19,12 @@ function buildStatusLine(): string {
 }
 
 export default function (pi: ExtensionAPI) {
-  /** Inject service_tier into the request body. */
+  /** Inject service_tier into the request body — Neuralwatt only. */
   pi.on("before_provider_request", async (event) => {
     const p = (event as any).payload;
-    if (p && typeof p === "object" && getTier() === "flex" && !p.service_tier) {
+    if (p && typeof p === "object" && !p.provider) return;
+    if ((p as any).provider !== "neuralwatt") return;
+    if (getTier() === "flex" && !p.service_tier) {
       p.service_tier = "flex";
     }
   });
@@ -47,6 +49,8 @@ export default function (pi: ExtensionAPI) {
 
   /** Show tier/permission status as a one-line widget above the editor. */
   pi.on("session_start", async (_event, ctx) => {
+    const model = ctx.model;
+    if (!model || model.provider !== "neuralwatt") return;
     const line = buildStatusLine();
     if (line) ctx.ui.setWidget("neuralwatt-tier", [line]);
   });
@@ -56,8 +60,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   /** Update the widget every request in case tier changed. */
-  pi.on("before_provider_request", async (_event, ctx) => {
-    const line = buildStatusLine();
-    if (line) ctx.ui.setWidget("neuralwatt-tier", [line]);
+  pi.on("before_provider_request", async (event, ctx) => {
+    const p = (event as any).payload;
+    if (p && (p as any).provider === "neuralwatt") {
+      const line = buildStatusLine();
+      if (line) ctx.ui.setWidget("neuralwatt-tier", [line]);
+    }
   });
 }
