@@ -31,6 +31,7 @@ let lastEnergy: {
 } | null = null;
 
 let vndRate: number | null = null;
+let lastFetchTime: number | 0 = 0;
 
 // ---------- VND rate: disk cache + file lock ----------
 
@@ -87,10 +88,26 @@ function releaseLock(): void {
  * - Failure → fall back to cached value (even if stale) or null.
  */
 async function getVND(): Promise<number | null> {
+  // In-memory guard — vndRate is the single source of truth in a live session
+  if (vndRate !== null) {
+    lastFetchTime = Date.now();
+    return vndRate;
+  }
+
   const cached = loadCachedRate();
   if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < RATE_TTL_MS) {
+    lastFetchTime = Date.now();
+    vndRate = cached.rate;
     return cached.rate;
   }
+
+  // Only allow one fetch attempt per TTL window so we never exceed 2 API calls/day
+  if (lastFetchTime > 0 && Date.now() - lastFetchTime < RATE_TTL_MS) {
+    return cached?.rate ?? null;
+  }
+
+  // Mark so no concurrent call in this session retries within TTL
+  lastFetchTime = Date.now();
 
   if (tryAcquireLock()) {
     // We got the lock — fetch for everyone and update the disk cache
@@ -239,7 +256,10 @@ export default function (pi: ExtensionAPI) {
 
   // Load cached rate synchronously on startup
   const initialCache = loadCachedRate();
-  if (initialCache) vndRate = initialCache.rate;
+  if (initialCache) {
+    vndRate = initialCache.rate;
+    lastFetchTime = Date.now();
+  }
 
   // Kick off async fetch (updates in-memory + disk cache)
   getVND().then((r) => {
