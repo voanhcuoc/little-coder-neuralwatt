@@ -1,4 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 
 // Adds /tier slash command to switch between "standard" and "flex" service tier
 // at runtime without restarting. Tier is per-session (process-level): each
@@ -50,9 +52,35 @@ function formatHold(sec: number): string {
   return `${m}m ${s}s`;
 }
 
+/**
+ * Build a dim annotation component to render hold-time info in the scrollable
+ * transcript as a CustomEntry — visible in TUI but never injected into LLM
+ * context.
+ */
+function holdAnnotationComponent(
+  holdSec: number,
+  theme: Theme,
+): Component {
+  const box = new Box(0, 0);
+  box.addChild(
+    new Text(theme.fg("dim", `(held ${formatHold(holdSec)})`), 0, 0),
+  );
+  return box;
+}
+
 export default function (pi: ExtensionAPI) {
+  const entryCustomType = "nw-flex-hold";
+
+  // Register a custom renderer that displays hold-time annotations in the
+  // scrollable message area without ever touching LLM context.
+  pi.registerEntryRenderer(entryCustomType, (entry, _options, theme) => {
+    const data = entry.data as { holdSec: number } | undefined;
+    if (!data || data.holdSec < 0.2) return undefined;
+    return holdAnnotationComponent(data.holdSec, theme);
+  });
+
   // Per-request timing. Events fire sequentially:
-  //   before_provider_request → after_provider_response → message_start → message_end → agent_end
+  //   before_provider_request → after_provider_response → message_start → message_end
   let requestStartNs: bigint | null = null;
 
   pi.registerCommand("tier", {
@@ -80,9 +108,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- Per-request lifetime hooks (TUI status bar only — never touches message content) ---
+  // --- Per-request hooks: measure hold time, inject annotation into scroll ---
 
-  /** Record request start and show initial "waiting" status for flex tier. */
+  /** Record request start time when flex tier is active. */
   pi.on("before_provider_request", async (event) => {
     const payload = (event as any).payload;
     const tier = getTier();
@@ -95,31 +123,32 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
-   * Compute hold time from wall-clock delta and display in the TUI status bar.
+   * Compute hold time from wall-clock delta and annotate the scroll.
    *
-   * Neuralwatt flex tier keeps the HTTP connection open with keepalive frames
+   * Neuralwatt flex tier holds the HTTP connection open with keepalive frames
    * until capacity opens up, then starts the stream. There is NO server-side
-   * hold-time field in the response, headers, or SSE stream (confirmed by
-   * reading the OpenAPI spec, streaming guide, and flex tier docs).
+   * hold-time or queue-time field in the response, headers, or SSE stream
+   * (confirmed by reading the OpenAPI spec, streaming guide, and flex tier
+   * docs — portal.neuralwatt.com/docs/guides/flex-tier).
    *
    * The gateway tracks `ttft` (time-to-first-token) server-side — visible in
-   * the /v1/usage/requests per-request log — but it is not echoed in the
-   * inference response. We measure it live: the delta between request send and
-   * the first byte of the stream is the client-side hold duration.
+   * the /v1/usage/requests per-request API — but it is NOT echoed in the
+   * inference response. We measure it live: the delta from `before_provider`
+   * request to `after_provider_response` is the client-side hold duration.
+   *
+   * The hold annotation is appended as a CustomEntry registered via
+   * `registerEntryRenderer`, so it renders in the TUI scrollable area but
+   * is never injected into buildSessionContext() → never touches LLM context.
    */
-  pi.on("message_start", async (_event, ctx) => {
+  pi.on("after_provider_response", async (_, ctx) => {
     if (requestStartNs === null) return;
     requestStartNs = null; // consumed
 
-    const holdS = (Date.now() - Number(requestStartNs) / 1_000_000) / 1000;
-    // Don't pollute the footer for negligible delays
-    if (holdS < 0.2) return;
+    const holdS =
+      (Date.now() - Number(requestStartNs) / 1_000_000) / 1000;
+    if (holdS < 0.2) return; // noise threshold
 
-    ctx.ui.setStatus("flex", `⏸ ${formatHold(holdS)} hold`);
-  });
-
-  /** Clear the flex status when the entire agent turn finishes. */
-  pi.on("agent_end", async (_, ctx) => {
-    ctx.ui.setStatus("flex", undefined);
+    // CustomEntry: visible in TUI scroll, NOT in LLM conversation context.
+    ctx.appendEntry(entryCustomType, { holdSec: holdS });
   });
 }
