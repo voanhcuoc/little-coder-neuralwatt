@@ -33,27 +33,16 @@ function formatHold(sec: number): string {
   return `${m}m ${s}s`;
 }
 
-/** Render a dim annotation: `(q: 1.2s i: 3.4s)` for custom entries */
+/** Render a dim annotation: `(queued X.Xs)` for custom entries */
 function holdRenderer(
   entry: { customType: string; data: unknown },
   _opts: { expanded: boolean },
   theme: Theme,
 ): Component | undefined {
-  const data = entry.data as { queueSec: number; inferenceSec: number } | undefined;
-  if (!data || data.queueSec === undefined || data.inferenceSec === undefined) return undefined;
-  const total = data.queueSec + data.inferenceSec;
-  if (total < 0.3) return undefined;
-
-  const qStr = formatHold(data.queueSec);
-  const iStr = formatHold(data.inferenceSec);
-  const label = data.queueSec > data.inferenceSec * 2
-    ? `q:${qStr} i:${iStr}`
-    : data.inferenceSec > data.queueSec * 2
-      ? `q:${qStr} i:${iStr}`
-      : `q:${qStr} i:${iStr}`;
-
+  const data = entry.data as { queueSec: number } | undefined;
+  if (!data || data.queueSec === undefined || data.queueSec < 0.3) return undefined;
   const box = new Box(2, 1);
-  box.addChild(new Text(theme.fg("dim", `( ${label} )`), 1, 0));
+  box.addChild(new Text(theme.fg("dim", `(queued ${formatHold(data.queueSec)})`), 1, 0));
   return box;
 }
 
@@ -62,22 +51,16 @@ export default function (pi: ExtensionAPI) {
   pi.registerEntryRenderer(CUSTOM_TYPE, holdRenderer);
 
   /**
-   * Decompose delay into queue time vs inference time.
+   * Measure flex queue hold: time from request send to response headers received.
    *
-   * Timeline:
-   *   before_provider_request ─────┐
-   *                                 ├─ queue time (server held connection open)
-   *   after_provider_response ─────┘
-   *                                 ├─ inference time (prompt process + gen)
-   *   message_end                   ┘
+   * for flex tier, the server holds the TCP connection open while the request
+   * is waiting in queue behind standard tier. this is the actual queue hold.
    *
-   * Queue time high + inference normal = queued in flex tier.
-   * Queue normal + inference high = slow server / long prompt.
+   * after headers arrive, inference begins. ttft = queue + prompt processing.
+   * if queue time >> normal ttft, the token was queued (flex tier).
+   * if queue time ≈ normal ttft, it just arrived quickly (or no queue).
    */
   let queueStartNs: bigint | null = null;
-  let afterResponseNs: number | null = null;
-  let generationStartMs: number | null = null;
-  let generationEndMs: number | null = null;
 
   pi.on("before_provider_request", async (event) => {
     (event as any).payload = injectServiceTier(
@@ -91,61 +74,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("after_provider_response", () => {
     if (queueStartNs === null) return;
-    afterResponseNs = Date.now();
-  });
-
-  pi.on("message_start", ({ message }) => {
-    if (message.role !== "assistant") return;
-    if (generationStartMs !== null) return; // already recorded one
-    generationStartMs = Date.now();
-  });
-
-  pi.on("message_end", ({ message }) => {
-    if (message.role !== "assistant") return;
-    if (queueStartNs === null) return; // not a flex request
-    if (afterResponseNs === null || generationStartMs === null) return;
-
-    generationEndMs = Date.now();
-    const queueSec = (afterResponseNs - Number(queueStartNs) / 1e6) / 1000;
-    const inferenceSec = (generationEndMs - generationStartMs) / 1000;
-
+    const queueSec = (Date.now() - Number(queueStartNs) / 1e6) / 1000;
     queueStartNs = null;
-    afterResponseNs = null;
-    generationStartMs = null;
-    generationEndMs = null;
 
-    if (queueSec + inferenceSec < 0.3) return; // noise
-    pi.appendEntry(CUSTOM_TYPE, { queueSec, inferenceSec });
-  });
-
-  pi.registerCommand("queue-status", {
-    description: "Show queue vs inference timing for this turn",
-    handler: async (_args: string, ctx) => {
-      const entries = pi.getFooterEntries();
-      const flexEntries = entries.filter(e => e.customType === "nw-flex-hold");
-      if (flexEntries.length === 0) {
-        ctx.ui.notify("No flex timing data for this turn", "info");
-        return;
-      }
-      const entry = flexEntries[flexEntries.length - 1];
-      const data = entry.data as { queueSec: number; inferenceSec: number } | undefined;
-      if (!data) {
-        ctx.ui.notify("No timing data available", "info");
-        return;
-      }
-      
-      const queue = formatHold(data.queueSec);
-      const inference = formatHold(data.inferenceSec);
-      const total = formatHold(data.queueSec + data.inferenceSec);
-      
-      let status = data.queueSec > data.inferenceSec * 2 
-        ? "queued (flex tier)" 
-        : data.inferenceSec > data.queueSec * 2 
-          ? "slow inference (server crowded)" 
-          : "mixed";
-      
-      ctx.ui.notify(`Queue: ${queue} | Inference: ${inference} | Total: ${total} | ${status}`, "info");
-    },
+    if (queueSec < 0.3) return; // normal / no queue
+    pi.appendEntry(CUSTOM_TYPE, { queueSec });
   });
 
   pi.registerCommand("tier", {
