@@ -10,17 +10,23 @@ function getTier(): Tier {
 }
 
 export default function (pi: ExtensionAPI) {
+  console.warn("[tier-toggle] loaded");
+
   /** Inject service_tier into the request body — Neuralwatt only. */
   pi.on("before_provider_request", async (event, ctx) => {
     const p = (event as any).payload;
     if (p && typeof p === "object") {
-      if ((p as any).provider !== "neuralwatt") return;
+      if ((p as any).provider !== "neuralwatt") {
+        console.warn("[tier-toggle] skipping non-neuralwatt:", (p as any).provider);
+        return;
+      }
       if (getTier() === "flex" && !(p as any).service_tier) {
         (p as any).service_tier = "flex";
       }
     }
     // Update footer status bar — flex shows "flex", standard is hidden
     const tier = getTier();
+    console.warn("[tier-toggle] setting status:", tier);
     if (tier === "flex") {
       ctx.ui.setStatus("nw-tier", "flex");
     } else {
