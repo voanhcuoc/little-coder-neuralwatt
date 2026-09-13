@@ -277,8 +277,6 @@ export default function (pi: ExtensionAPI) {
   void getVND();
 
   pi.on("message_end", (event: any) => {
-    if (!lastEnergy || lastEnergy.joules <= 0) return;
-
     // Extract token data from SDK event (not from raw stream parsing)
     const msg = event?.message;
     const usage = msg?.usage;
@@ -291,7 +289,7 @@ export default function (pi: ExtensionAPI) {
         tokenCostUsd: (usage.cost?.total as number) ?? 0,
       };
 
-      // Accumulate across all messages in this agent run
+      // Always accumulate tokens (even for tool-result messages with no energy)
       if (!turnTotals) {
         turnTotals = { totalInput: 0, totalCache: 0, totalOutput: 0, totalTokenCost: 0, totalEnergyJ: 0, totalEnergyCostUsd: 0, summaryShown: false };
       }
@@ -299,27 +297,31 @@ export default function (pi: ExtensionAPI) {
       turnTotals.totalCache += lastTokens.cacheRead;
       turnTotals.totalOutput += lastTokens.output;
       turnTotals.totalTokenCost += lastTokens.tokenCostUsd;
-      turnTotals.totalEnergyJ += lastEnergy.joules;
-      turnTotals.totalEnergyCostUsd += lastEnergy.request_cost_usd;
-    }
 
-    void getVND();
-    const parts = [
-      `${formatEnergyWh(lastEnergy.joules)}`,
-      `${formatEnergyJ(lastEnergy.joules)}`,
-      `${formatCost(lastEnergy.request_cost_usd)}`,
-    ];
-    if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
-      parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+      // Energy data only available for LLM-assisted (not pure tool-result) messages
+      if (lastEnergy && lastEnergy.joules > 0) {
+        turnTotals.totalEnergyJ += lastEnergy.joules;
+        turnTotals.totalEnergyCostUsd += lastEnergy.request_cost_usd;
+
+        void getVND();
+        const parts = [
+          `${formatEnergyWh(lastEnergy.joules)}`,
+          `${formatEnergyJ(lastEnergy.joules)}`,
+          `${formatCost(lastEnergy.request_cost_usd)}`,
+        ];
+        if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
+          parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+        }
+        // Token breakdown
+        if (lastTokens) {
+          parts.push(formatTokenBreakdown(lastTokens.input, lastTokens.cacheRead, lastTokens.output, lastTokens.tokenCostUsd));
+        }
+        const ribbonText = `⚡ ${parts.join(" · ")}`;
+        if (ribbonText === lastRibbonText) return;
+        lastRibbonText = ribbonText;
+        pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
+      }
     }
-    // Token breakdown
-    if (lastTokens) {
-      parts.push(formatTokenBreakdown(lastTokens.input, lastTokens.cacheRead, lastTokens.output, lastTokens.tokenCostUsd));
-    }
-    const ribbonText = `⚡ ${parts.join(" · ")}`;
-    if (ribbonText === lastRibbonText) return;
-    lastRibbonText = ribbonText;
-    pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
   });
 
   // Grand summary when agent fully settles (done processing, waiting for user)
