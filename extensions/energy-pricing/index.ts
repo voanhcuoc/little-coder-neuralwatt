@@ -2,6 +2,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Box as BoxClass, Text as TextClass } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 
 // ============================================================================
 // Energy pricing — display Neuralwatt per-request energy + cost in scroll area
@@ -36,6 +37,8 @@ let lastEnergy: {
   joules: number;
   kwh: number;
   request_cost_usd: number;
+  tokens?: number;
+  model?: string;
 } | null = null;
 
 let vndRate: number | null = null;
@@ -190,6 +193,69 @@ async function getVND(): Promise<number | null> {
   return cached?.rate ?? null;
 }
 
+// ---------- Token pricing from models.json ----------
+const HOME = os.homedir();
+const MODELS_JSON = path.join(HOME, ".config", "little-coder", "models.json");
+
+interface ModelCost {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+interface ModelEntry {
+  id: string;
+  cost: ModelCost;
+}
+
+interface ProviderConfig {
+  models: ModelEntry[];
+}
+
+interface ModelsConfig {
+  providers: Record<string, ProviderConfig>;
+}
+
+let modelPricing: Map<string, { input: number; output: number }> | null = null;
+
+function loadModelPricing(): Map<string, { input: number; output: number }> {
+  if (modelPricing) return modelPricing;
+  modelPricing = new Map();
+  try {
+    const raw = fs.readFileSync(MODELS_JSON, "utf-8");
+    const config = JSON.parse(raw) as ModelsConfig;
+    for (const [_provider, provider] of Object.entries(config.providers)) {
+      for (const model of provider.models) {
+        modelPricing!.set(model.id, {
+          input: model.cost.input ?? 0,
+          output: model.cost.output ?? 0,
+        });
+      }
+    }
+  } catch {
+    // models.json not found or invalid — token cost estimation will use fallback
+  }
+  return modelPricing;
+}
+
+function getTokenCost(tokens: number, modelId: string): number {
+  const pricing = loadModelPricing().get(modelId);
+  if (!pricing) {
+    // Fallback: unknown model, no pricing data
+    return 0;
+  }
+  // Assume 50/50 input/output split for per-response cost estimate
+  return (tokens / 1_000_000) * (pricing.input + pricing.output) / 2;
+}
+
+function formatTokenCost(usd: number): string {
+  if (usd < 0.001) return `${usd.toFixed(6)} USD`;
+  if (usd < 0.01) return `${usd.toFixed(5)} USD (under 1 cent)`;
+  if (usd < 1) return `${usd.toFixed(3)} USD (${Math.round(usd * 100)} cent)`;
+  return `${usd.toFixed(2)} USD`;
+}
+
 // ---------- Formatting ----------
 
 function formatEnergyJ(joules: number): string {
@@ -251,8 +317,27 @@ async function captureSseComments(
   }
 }
 
-function parseSseComment(line: string): void {
-  const trimmed = line.trim();
+function parseSseLine(line: string): void {
+  const trimmed = line.trim().replace(/^data:/, "").trim();
+
+  // End-of-stream [DONE] chunk from Neuralwatt
+  if (trimmed === "[DONE]") return;
+
+  // Try to parse usage from the last chunk which includes
+  // {"id":"...","done":true,"usage":{"prompt_tokens":...}}
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj.usage && typeof obj.usage === "object") {
+        lastEnergy!.tokens =
+          (obj.usage.total_tokens as number) ??
+          ((obj.usage.input_tokens as number) + (obj.usage.output_tokens as number)) ??
+          lastEnergy?.tokens;
+      }
+    } catch { /* not JSON chunk */ }
+  }
+
+  // Neuralwatt custom comments
   if (!trimmed.startsWith(": ")) return;
 
   try {
@@ -262,11 +347,13 @@ function parseSseComment(line: string): void {
         energy_kwh?: number;
       };
       if (lastEnergy?.joules === obj.energy_joules) return; // dedup
-      // If we already have a cost, keep it
+      // Preserve existing tokens/model from stream parsing
       lastEnergy = {
         joules: obj.energy_joules ?? lastEnergy?.joules ?? 0,
         kwh: obj.energy_kwh ?? lastEnergy?.kwh ?? 0,
         request_cost_usd: lastEnergy?.request_cost_usd ?? 0,
+        tokens: lastEnergy?.tokens,
+        model: lastEnergy?.model,
       };
     } else if (trimmed.startsWith(": cost ")) {
       const obj = JSON.parse(trimmed.slice(7)) as {
@@ -303,11 +390,21 @@ export default function (pi: ExtensionAPI) {
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (!url.startsWith(NW_ORIGIN + "/v1/chat/completions")) return originalFetch(input, init);
 
+      // Capture model from request body
+      let requestModel = "unknown";
+      if (init?.body) {
+        try {
+          const bodyJson = JSON.parse(String(init.body)) as { model?: string };
+          requestModel = bodyJson.model ?? "unknown";
+        } catch { /* not JSON */ }
+      }
+
       const response = await originalFetch(input, init);
 
       if (response.ok && response.body) {
         const [sdkBody, quotaBody] = response.body.tee();
-        void captureSseComments(quotaBody, parseSseComment);
+        lastEnergy!.model = requestModel;
+        void captureSseComments(quotaBody, parseSseLine);
         return new Response(sdkBody, {
           headers: response.headers,
           status: response.status,
@@ -341,12 +438,20 @@ export default function (pi: ExtensionAPI) {
     const parts = [
       `${formatEnergyWh(lastEnergy.joules)}`,
       `${formatEnergyJ(lastEnergy.joules)}`,
-      `${formatCost(lastEnergy.request_cost_usd)}`,
+      `${formatTokenCost(lastEnergy.request_cost_usd)}`,
     ];
 
     // VND: include whenever fetch succeeded
     if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
       parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+    }
+
+    // Token count with model-specific pricing
+    if (lastEnergy.tokens && lastEnergy.tokens > 0) {
+      const tokenStr = `${lastEnergy.tokens.toLocaleString()} tokens`;
+      // Estimate token cost using model-specific pricing from models.json
+      const modelTokensCost = getTokenCost(lastEnergy.tokens, lastEnergy.model ?? "unknown");
+      parts.push(`${tokenStr}${modelTokensCost > 0.000001 ? " | " + formatTokenCost(modelTokensCost) : ""}`);
     }
 
     const ribbonText = `⚡ ${parts.join(" · ")}`;
