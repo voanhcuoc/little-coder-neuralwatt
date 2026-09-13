@@ -266,13 +266,15 @@ function formatTokenCostFlat(usd: number): string {
   return `${usd.toFixed(2)} USD`;
 }
 
-/** Format token breakdown: "3,200 · 1,200 · 2,800" (input · cache · output). */
-function formatTokenBreakdown(inputT: number | undefined, outputT: number | undefined, cacheT: number | undefined): string | null {
+/** Format token breakdown: "4,000 cold · 6,000 cache · 3,000 out · 0.13 USD". */
+function formatTokenBreakdown(inputT: number | undefined, outputT: number | undefined, cacheT: number | undefined, modelCost: number): string | null {
   if (!inputT && !outputT && !cacheT) return null;
-  const inputStr = inputT ? inputT.toLocaleString() : "0";
-  const cacheStr = cacheT ? cacheT.toLocaleString() : "0";
-  const outputStr = outputT ? outputT.toLocaleString() : "0";
-  return `${inputStr} · ${cacheStr} · ${outputStr}`;
+  const coldT = inputT ? inputT - cacheT : 0;
+  const coldStr = coldT > 0 ? `${coldT.toLocaleString()} cold` : "0 cold";
+  const cacheStr = cacheT ? cacheT.toLocaleString() : "0 cache";
+  const outputStr = outputT ? outputT.toLocaleString() : "0 out";
+  const costStr = modelCost > 0.000001 ? formatTokenCostFlat(modelCost) : "0 USD";
+  return `${coldStr} · ${cacheStr} · ${outputStr} · ${costStr}`;
 }
 
 // ---------- Formatting ----------
@@ -485,11 +487,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Token breakdown
-    const tokenBrk = formatTokenBreakdown(lastEnergy.inputTokens, lastEnergy.outputTokens, lastEnergy.cacheReadTokens);
+    const modelTokensCost = getTokenCost(lastEnergy.tokens ?? 0, lastEnergy.model ?? "unknown");
+    const tokenBrk = formatTokenBreakdown(lastEnergy.inputTokens, lastEnergy.outputTokens, lastEnergy.cacheReadTokens, modelTokensCost);
     if (tokenBrk) {
-      const modelTokensCost = getTokenCost(lastEnergy.tokens ?? 0, lastEnergy.model ?? "unknown");
-      const costPart = modelTokensCost > 0.000001 ? " · " + formatTokenCostFlat(modelTokensCost) : "";
-      parts.push(`(${tokenBrk}${costPart})`);
+      parts.push(`(${tokenBrk})`);
     }
 
     const ribbonText = `⚡ ${parts.join(" · ")}`;
