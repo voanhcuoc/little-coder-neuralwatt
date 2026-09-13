@@ -33,13 +33,15 @@ let vndRate: number | null = null;
 let lastFetchTime: number | 0 = 0;
 let lastRibbonText: string = "";
 
-/** Per-turn accumulator for token/cost/energy aggregation. */
+/** Running accumulator across all messages/turns until agent settles. */
 let turnTotals: {
   totalInput: number;
   totalCache: number;
   totalOutput: number;
   totalTokenCost: number;
   totalEnergyJ: number;
+  totalEnergyCostUsd: number;
+  summaryShown: boolean;
 } | null = null;
 
 interface RateCache {
@@ -289,15 +291,16 @@ export default function (pi: ExtensionAPI) {
         tokenCostUsd: (usage.cost?.total as number) ?? 0,
       };
 
-      // Accumulate per-turn totals
+      // Accumulate across all messages in this agent run
       if (!turnTotals) {
-        turnTotals = { totalInput: 0, totalCache: 0, totalOutput: 0, totalTokenCost: 0, totalEnergyJ: 0 };
+        turnTotals = { totalInput: 0, totalCache: 0, totalOutput: 0, totalTokenCost: 0, totalEnergyJ: 0, totalEnergyCostUsd: 0, summaryShown: false };
       }
       turnTotals.totalInput += lastTokens.input;
       turnTotals.totalCache += lastTokens.cacheRead;
       turnTotals.totalOutput += lastTokens.output;
       turnTotals.totalTokenCost += lastTokens.tokenCostUsd;
       turnTotals.totalEnergyJ += lastEnergy.joules;
+      turnTotals.totalEnergyCostUsd += lastEnergy.request_cost_usd;
     }
 
     void getVND();
@@ -319,15 +322,18 @@ export default function (pi: ExtensionAPI) {
     pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
   });
 
-  // End-of-turn summary
-  pi.on("turn_end", () => {
-    if (!turnTotals) return;
+  // Grand summary when agent fully settles (done processing, waiting for user)
+  pi.on("agent_settled", () => {
+    if (!turnTotals || turnTotals.summaryShown) return;
+    turnTotals.summaryShown = true;
     const summaryText = formatTurnSummary(turnTotals.totalInput, turnTotals.totalCache, turnTotals.totalOutput, turnTotals.totalTokenCost);
-    const fullText = `⚡ Turn summary: ${summaryText}`;
-    if (fullText !== lastRibbonText) {
-      lastRibbonText = fullText;
-      pi.appendEntry<CostRibbonData>("nw-energy", { text: fullText });
-    }
+    const energyWh = formatEnergyWh(turnTotals.totalEnergyJ);
+    const energyCost = formatCost(turnTotals.totalEnergyCostUsd);
+    const vndText = vndRate != null && turnTotals.totalEnergyCostUsd > 0 ? formatVND(turnTotals.totalEnergyCostUsd, vndRate) : "";
+    const fullText = `⚡ Agent summary: ${energyWh} · ${energyCost}${vndText ? ` · ${vndText}` : ``} · ${summaryText}`;
+    lastRibbonText = fullText;
+    pi.appendEntry<CostRibbonData>("nw-energy", { text: fullText });
+    // Reset for next agent run
     turnTotals = null;
   });
 }
