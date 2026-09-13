@@ -39,6 +39,9 @@ let lastEnergy: {
   request_cost_usd: number;
   tokens?: number;
   model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
 } | null = null;
 
 let vndRate: number | null = null;
@@ -256,6 +259,22 @@ function formatTokenCost(usd: number): string {
   return `${usd.toFixed(2)} USD`;
 }
 
+/** Flat cost format with no nested parens — used inside token (…). */
+function formatTokenCostFlat(usd: number): string {
+  if (usd < 0.0001) return `${usd.toFixed(6)} USD`;
+  if (usd < 0.01) return `${usd.toFixed(4)} USD`;
+  return `${usd.toFixed(2)} USD`;
+}
+
+/** Format token breakdown: "3,200 · 1,200 · 2,800" (input · cache · output). */
+function formatTokenBreakdown(inputT: number | undefined, outputT: number | undefined, cacheT: number | undefined): string | null {
+  if (!inputT && !outputT && !cacheT) return null;
+  const inputStr = inputT ? inputT.toLocaleString() : "0";
+  const cacheStr = cacheT ? cacheT.toLocaleString() : "0";
+  const outputStr = outputT ? outputT.toLocaleString() : "0";
+  return `${inputStr} · ${cacheStr} · ${outputStr}`;
+}
+
 // ---------- Formatting ----------
 
 function formatEnergyJ(joules: number): string {
@@ -327,12 +346,19 @@ function parseSseLine(line: string): void {
   // {"id":"...","done":true,"usage":{"prompt_tokens":...}}
   if (trimmed.startsWith("{")) {
     try {
-      const obj = JSON.parse(trimmed);
+      const obj = JSON.parse(trimmed) as { usage?: Record<string, number> };
       if (obj.usage && typeof obj.usage === "object") {
         lastEnergy!.tokens =
           (obj.usage.total_tokens as number) ??
-          ((obj.usage.input_tokens as number) + (obj.usage.output_tokens as number)) ??
+          ((obj.usage.input_tokens as number ?? 0) + (obj.usage.output_tokens as number ?? 0)) ??
           lastEnergy?.tokens;
+        // Breakdown:
+        lastEnergy!.inputTokens = obj.usage.prompt_tokens ??
+          obj.usage.input_tokens ?? lastEnergy?.inputTokens;
+        lastEnergy!.outputTokens = obj.usage.completion_tokens ??
+          obj.usage.output_tokens ?? lastEnergy?.outputTokens;
+        lastEnergy!.cacheReadTokens = obj.usage.cache_read_tokens ??
+          obj.usage.cache_tokens_read ?? lastEnergy?.cacheReadTokens;
       }
     } catch { /* not JSON chunk */ }
   }
@@ -377,7 +403,19 @@ export default function (pi: ExtensionAPI) {
     const text = entry.data?.text;
     if (!text) return undefined;
     const box = new BoxClass(2, 1);
-    box.addChild(new TextClass(theme.fg("dim", text), 1, 0));
+    // Highlight energy parts (⚡ … USD … VND) in success green; token block stays neutral
+    const parenIdx = text.indexOf("(");
+    let energyText: string, tokenText: string | null;
+    if (parenIdx >= 0) {
+      energyText = text.slice(0, parenIdx);
+      const closeIdx = text.lastIndexOf(")");
+      tokenText = closeIdx > parenIdx ? text.slice(parenIdx, closeIdx + 1) : null;
+    } else {
+      energyText = text;
+      tokenText = null;
+    }
+    box.addChild(new TextClass(theme.fg("success", energyText.trimEnd()), 1, 0));
+    if (tokenText) box.addChild(new TextClass(theme.fg("dim", tokenText), 0, 0));
     return box;
   });
 
@@ -446,12 +484,12 @@ export default function (pi: ExtensionAPI) {
       parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
     }
 
-    // Token count with model-specific pricing
-    if (lastEnergy.tokens && lastEnergy.tokens > 0) {
-      const tokenStr = `${lastEnergy.tokens.toLocaleString()} tokens`;
-      // Estimate token cost using model-specific pricing from models.json
-      const modelTokensCost = getTokenCost(lastEnergy.tokens, lastEnergy.model ?? "unknown");
-      parts.push(`${tokenStr}${modelTokensCost > 0.000001 ? " | " + formatTokenCost(modelTokensCost) : ""}`);
+    // Token breakdown
+    const tokenBrk = formatTokenBreakdown(lastEnergy.inputTokens, lastEnergy.outputTokens, lastEnergy.cacheReadTokens);
+    if (tokenBrk) {
+      const modelTokensCost = getTokenCost(lastEnergy.tokens ?? 0, lastEnergy.model ?? "unknown");
+      const costPart = modelTokensCost > 0.000001 ? " · " + formatTokenCostFlat(modelTokensCost) : "";
+      parts.push(`(${tokenBrk}${costPart})`);
     }
 
     const ribbonText = `⚡ ${parts.join(" · ")}`;
