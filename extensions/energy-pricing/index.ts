@@ -16,6 +16,14 @@ let lastEnergy: {
   request_cost_usd: number;
 } | null = null;
 
+let lastTokens: {
+  input: number;
+  cacheRead: number;
+  output: number;
+  totalTokens: number;
+  tokenCostUsd: number;
+} | null = null;
+
 let vndRate: number | null = null;
 let lastFetchTime: number | 0 = 0;
 let lastRibbonText: string = "";
@@ -142,6 +150,19 @@ interface CostRibbonData {
   text: string;
 }
 
+/** Format token breakdown: "(4,000 in · 6,000 cache · 2,000 out · 0.13 USD)". */
+function formatTokenBreakdown(inputT: number, cacheT: number, outputT: number, tokenCostUsd: number): string {
+  const inStr = inputT.toLocaleString();
+  const cacheStr = cacheT.toLocaleString();
+  const outStr = outputT.toLocaleString();
+  // No nested parens inside the cost field
+  let costStr: string;
+  if (tokenCostUsd < 0.0001) costStr = `${tokenCostUsd.toFixed(6)} USD`;
+  else if (tokenCostUsd < 0.01) costStr = `${tokenCostUsd.toFixed(4)} USD`;
+  else costStr = `${tokenCostUsd.toFixed(2)} USD`;
+  return `(${inStr} · ${cacheStr} · ${outStr} · ${costStr})`;
+}
+
 function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
   if (vnd === 0) return "0 VND";
@@ -226,8 +247,22 @@ export default function (pi: ExtensionAPI) {
   }
   void getVND();
 
-  pi.on("message_end", (_event) => {
+  pi.on("message_end", (event: any) => {
     if (!lastEnergy || lastEnergy.joules <= 0) return;
+
+    // Extract token data from SDK event (not from raw stream parsing)
+    const msg = event?.message;
+    const usage = msg?.usage;
+    if (usage && typeof usage === "object") {
+      lastTokens = {
+        input: (usage.input as number) ?? 0,
+        cacheRead: (usage.cacheRead as number) ?? 0,
+        output: (usage.output as number) ?? 0,
+        totalTokens: (usage.totalTokens as number) ?? 0,
+        tokenCostUsd: (usage.cost?.total as number) ?? 0,
+      };
+    }
+
     void getVND();
     const parts = [
       `${formatEnergyWh(lastEnergy.joules)}`,
@@ -236,6 +271,10 @@ export default function (pi: ExtensionAPI) {
     ];
     if (vndRate !== null && lastEnergy.request_cost_usd > 0) {
       parts.push(formatVND(lastEnergy.request_cost_usd, vndRate));
+    }
+    // Token breakdown
+    if (lastTokens) {
+      parts.push(formatTokenBreakdown(lastTokens.input, lastTokens.cacheRead, lastTokens.output, lastTokens.tokenCostUsd));
     }
     const ribbonText = `⚡ ${parts.join(" · ")}`;
     if (ribbonText === lastRibbonText) return;
