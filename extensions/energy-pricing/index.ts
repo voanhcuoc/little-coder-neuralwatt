@@ -33,6 +33,15 @@ let vndRate: number | null = null;
 let lastFetchTime: number | 0 = 0;
 let lastRibbonText: string = "";
 
+/** Per-turn accumulator for token/cost/energy aggregation. */
+let turnTotals: {
+  totalInput: number;
+  totalCache: number;
+  totalOutput: number;
+  totalTokenCost: number;
+  totalEnergyJ: number;
+} | null = null;
+
 interface RateCache {
   rate: number;
   fetchedAt: string;
@@ -168,6 +177,19 @@ function formatTokenBreakdown(inputT: number, cacheT: number, outputT: number, t
   return `(${inStr} · ${cacheStr} · ${outStr} · ${costStr})`;
 }
 
+/** Format turn-summary token breakdown: "(4,000 in · 75% cache · 2,000 out · 0.35 USD)". */
+function formatTurnSummary(inputT: number, cacheT: number, outputT: number, tokenCostUsd: number): string {
+  const inStr = inputT.toLocaleString();
+  const outStr = outputT.toLocaleString();
+  const totalInput = inputT + cacheT;
+  const cachePct = totalInput > 0 ? Math.round(cacheT / totalInput * 100) : 0;
+  let costStr: string;
+  if (tokenCostUsd < 0.0001) costStr = `${tokenCostUsd.toFixed(6)} USD`;
+  else if (tokenCostUsd < 0.01) costStr = `${tokenCostUsd.toFixed(4)} USD`;
+  else costStr = `${tokenCostUsd.toFixed(2)} USD`;
+  return `(${inStr} · ${cachePct}% cache · ${outStr} · ${costStr})`;
+}
+
 function formatVND(usd: number, rate: number): string {
   const vnd = usd * rate;
   if (vnd === 0) return "0 VND";
@@ -266,6 +288,16 @@ export default function (pi: ExtensionAPI) {
         totalTokens: (usage.totalTokens as number) ?? 0,
         tokenCostUsd: (usage.cost?.total as number) ?? 0,
       };
+
+      // Accumulate per-turn totals
+      if (!turnTotals) {
+        turnTotals = { totalInput: 0, totalCache: 0, totalOutput: 0, totalTokenCost: 0, totalEnergyJ: 0 };
+      }
+      turnTotals.totalInput += lastTokens.input;
+      turnTotals.totalCache += lastTokens.cacheRead;
+      turnTotals.totalOutput += lastTokens.output;
+      turnTotals.totalTokenCost += lastTokens.tokenCostUsd;
+      turnTotals.totalEnergyJ += lastEnergy.joules;
     }
 
     void getVND();
@@ -285,5 +317,17 @@ export default function (pi: ExtensionAPI) {
     if (ribbonText === lastRibbonText) return;
     lastRibbonText = ribbonText;
     pi.appendEntry<CostRibbonData>("nw-energy", { text: ribbonText });
+  });
+
+  // End-of-turn summary
+  pi.on("turn_end", () => {
+    if (!turnTotals) return;
+    const summaryText = formatTurnSummary(turnTotals.totalInput, turnTotals.totalCache, turnTotals.totalOutput, turnTotals.totalTokenCost);
+    const fullText = `⚡ Turn summary: ${summaryText}`;
+    if (fullText !== lastRibbonText) {
+      lastRibbonText = fullText;
+      pi.appendEntry<CostRibbonData>("nw-energy", { text: fullText });
+    }
+    turnTotals = null;
   });
 }
