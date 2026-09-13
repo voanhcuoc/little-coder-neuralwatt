@@ -328,9 +328,10 @@ export default function (pi: ExtensionAPI) {
     turnTotals.summaryShown = true;
     const summaryText = formatTurnSummary(turnTotals.totalInput, turnTotals.totalCache, turnTotals.totalOutput, turnTotals.totalTokenCost);
     const energyWh = formatEnergyWh(turnTotals.totalEnergyJ);
+    const energyJ = formatEnergyJ(turnTotals.totalEnergyJ);
     const energyCost = formatCost(turnTotals.totalEnergyCostUsd);
     const vndText = vndRate != null && turnTotals.totalEnergyCostUsd > 0 ? formatVND(turnTotals.totalEnergyCostUsd, vndRate) : "";
-    const fullText = `⚡ Agent summary: ${energyWh} · ${energyCost}${vndText ? ` · ${vndText}` : ``} · ${summaryText}`;
+    const fullText = `⚡ Agent summary: ${energyWh} · ${energyJ} · ${energyCost}${vndText ? ` · ${vndText}` : ``} · ${summaryText}`;
     lastRibbonText = fullText;
     pi.appendEntry<CostRibbonData>("nw-energy", { text: fullText });
     // Reset for next agent run
