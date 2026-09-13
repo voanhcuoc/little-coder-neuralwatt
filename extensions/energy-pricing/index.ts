@@ -176,7 +176,7 @@ function formatTokenBreakdown(inputT: number, cacheT: number, outputT: number, t
   if (tokenCostUsd < 0.0001) costStr = `${tokenCostUsd.toFixed(6)} USD`;
   else if (tokenCostUsd < 0.01) costStr = `${tokenCostUsd.toFixed(4)} USD`;
   else costStr = `${tokenCostUsd.toFixed(2)} USD`;
-  return `(${inStr} · ${cacheStr} · ${outStr} · ${costStr})`;
+  return `(${inStr} cold · ${cacheStr} cache · ${outStr} out · ${costStr})`;
 }
 
 /** Format turn-summary token breakdown: "(4,000 in · 75% cache · 2,000 out · 0.35 USD)". */
@@ -189,7 +189,7 @@ function formatTurnSummary(inputT: number, cacheT: number, outputT: number, toke
   if (tokenCostUsd < 0.0001) costStr = `${tokenCostUsd.toFixed(6)} USD`;
   else if (tokenCostUsd < 0.01) costStr = `${tokenCostUsd.toFixed(4)} USD`;
   else costStr = `${tokenCostUsd.toFixed(2)} USD`;
-  return `(${inStr} · ${cachePct}% cache · ${outStr} · ${costStr})`;
+  return `(${inStr} cold · ${cachePct}% cache · ${outStr} out · ${costStr})`;
 }
 
 function formatVND(usd: number, rate: number): string {
