@@ -1,13 +1,18 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Box as BoxClass, Text as TextClass } from "@earendil-works/pi-tui";
+import * as fs from "node:fs";
+import * as os from "node:os";
+
 // ============================================================================
 // Energy pricing — display Neuralwatt per-request energy + cost.
 // Disabled: token parsing from response stream causes connection issues.
 // ============================================================================
 
 const NW_ORIGIN = "https://api.neuralwatt.com";
-const CACHE_DIR = __dirname;
-const RATE_FILE = path.join(CACHE_DIR, ".vnd-rate.json");
-const RATE_TIMESTAMP_FILE = path.join(CACHE_DIR, ".vnd-rate-attempt");
-const LOCK_FILE = path.join(CACHE_DIR, ".rate-lock");
+const CACHE_DIR = os.homedir() + "/.config/little-coder/extensions/energy-pricing";
+const RATE_FILE = CACHE_DIR + "/.vnd-rate.json";
+const RATE_TIMESTAMP_FILE = CACHE_DIR + "/.vnd-rate-attempt";
+const LOCK_FILE = CACHE_DIR + "/.rate-lock";
 const RATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 let lastEnergy: {
